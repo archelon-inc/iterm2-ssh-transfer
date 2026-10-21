@@ -10,6 +10,7 @@ Scripts that move files between your Mac and the SSH host of an iTerm2 tab with 
 | `download.sh` | ⌘⇧D | Downloads the file or folder whose path you selected on screen from the SSH host to `~/Downloads` on your Mac. If you selected a URL, opens it in your Mac's browser |
 
 - The SSH host is whatever the `ssh` running in that tab is connected to. Tabs using tmux integration (`tmux -CC`) work too.
+- If `~/tmp` does not exist on the SSH host, you are asked before it is created.
 - Folders and anything over 10 MB are confirmed first with their size, then sent with a progress window you can stop.
 - File names in the decomposed form macOS sometimes uses (NFD) are converted to the composed form (NFC) when sent.
 - A selected path that wraps across lines on screen still works, as long as it matches exactly one file or folder on the host.

@@ -105,9 +105,9 @@ while IFS= read -r line; do
   [ -n "$line" ] && { [ -f "$line" ] || [ -d "$line" ]; } && finder_paths+=("$line")
 done <<< "$finder_files"
 
-# 前面に出る OK / キャンセルのダイアログ。キャンセルなら非 0 で返る
+# 前面に出る OK / キャンセルのダイアログ。$1 は文、$2 は OK のボタンの文字。キャンセルなら非 0 で返る
 confirm() {
-  osascript - "$1" "$(msg btn_cancel)" "$(msg btn_send)" <<'APPLESCRIPT' >/dev/null
+  osascript - "$1" "$(msg btn_cancel)" "$2" <<'APPLESCRIPT' >/dev/null
 on run argv
   tell application "System Events"
     activate
@@ -189,7 +189,24 @@ tar_nfc() {
   )
 }
 
-# 1 つ送り、リモートのホームを stdout に出す。フォルダは tar で固めて送り、~/tmp で展開する。
+# 送り先の ~/tmp は勝手に作らない。無ければ @@NOTMP を返して止め、作ってよいかを聞いてから make_tmp=yes で送り直す
+make_tmp=no
+tmp_ready() {
+  if [ "$make_tmp" = yes ]; then
+    printf '%s' 'mkdir -p "$HOME/tmp"'
+  else
+    printf '%s' '{ [ -d "$HOME/tmp" ] || { echo @@NOTMP; exit 0; }; }'
+  fi
+}
+
+# ~/tmp が無かったと知らせ、作ってよいかを聞く。よければ make_tmp=yes にする
+ask_make_tmp() {
+  confirm "$(msg up_no_tmp "$SERVER")" "$(msg btn_create_and_send)" || return 1
+  log "make ~/tmp"
+  make_tmp=yes
+}
+
+# 1 つ送り、リモートのホームを stdout に出す。~/tmp が無ければ NOTMP を出す。フォルダは tar で固めて送り、~/tmp で展開する。
 # 途中で切れたものは残さない。同じ名前が ~/tmp にあれば置き換える
 send_one() {
   local f=$1 offset=$2 bytes=$3 q
@@ -197,7 +214,7 @@ send_one() {
   if [ -d "$f" ]; then
     tar_nfc "$f" | count_bytes "$offset" \
       | ssh -o BatchMode=yes -o ConnectTimeout=10 -o ClearAllForwardings=yes "$SERVER" \
-        "mkdir -p \"\$HOME/tmp\" && w=\$(mktemp -d \"\$HOME/tmp/.upload.XXXXXX\") || exit 1
+        "$(tmp_ready) && w=\$(mktemp -d \"\$HOME/tmp/.upload.XXXXXX\") || exit 1
          if tar xf - -C \"\$w\" && rm -rf \"\$HOME/tmp/\"$q && mv \"\$w/\"$q \"\$HOME/tmp/\"; then
            rmdir \"\$w\"; echo \"@@\$HOME\"
          else
@@ -206,7 +223,7 @@ send_one() {
   else
     count_bytes "$offset" < "$f" \
       | ssh -o BatchMode=yes -o ConnectTimeout=10 -o ClearAllForwardings=yes "$SERVER" \
-        "mkdir -p \"\$HOME/tmp\" && p=\"\$HOME/tmp/\"$q && cat > \"\$p.part\"
+        "$(tmp_ready) && p=\"\$HOME/tmp/\"$q && cat > \"\$p.part\"
          if [ \"\$(wc -c < \"\$p.part\" | tr -d ' ')\" = $bytes ] && mv \"\$p.part\" \"\$p\"; then
            echo \"@@\$HOME\"
          else
@@ -215,11 +232,14 @@ send_one() {
   fi | sed -n 's/^@@//p' | tail -1
 }
 
-# 順に送り、送った先のパスを 1 行ずつ $sent に書く。失敗したら、その名前を $failed に書いて 1 を返す
+# 順に送り、送った先のパスを 1 行ずつ $sent に書く。
+# 失敗したら、その名前を $failed に書いて 1 を返す。~/tmp が無ければ 3 を返す
 send_all() {
   local i offset=0 home
+  : >"$sent"
   for i in "${!finder_paths[@]}"; do
     home=$(send_one "${finder_paths[$i]}" "$offset" "${sizes[$i]}")
+    [ "$home" = NOTMP ] && return 3
     if [ -z "$home" ]; then
       basename "${finder_paths[$i]}" >"$failed"
       return 1
@@ -307,7 +327,7 @@ kill_tree() {
 }
 
 # send_all を裏で動かしながら、進み具合の窓を出す。
-# 窓の中断で止めたら 2、送るのに失敗したら 1 を返す
+# 窓の中断で止めたら 2、送るのに失敗したら 1、~/tmp が無ければ 3 を返す
 send_with_progress() {
   local total=$1 label=$2
   send_all &
@@ -367,12 +387,17 @@ if [ "${#finder_paths[@]}" -gt 0 ]; then
     fi
     detail=$(human_size "$total")
     [ "$dirs" -gt 0 ] && detail=$(msg size_files "$detail" "$files")
-    confirm "$(msg up_confirm "$what" "$detail" "$SERVER")" \
+    confirm "$(msg up_confirm "$what" "$detail" "$SERVER")" "$(msg btn_send)" \
       || { log "cancelled"; exit 0; }
-    send_with_progress "$total" "$(msg up_progress "$what" "$SERVER")"
-    status=$?
+    send_files() { send_with_progress "$total" "$(msg up_progress "$what" "$SERVER")"; }
   else
-    send_all
+    send_files() { send_all; }
+  fi
+  send_files
+  status=$?
+  if [ "$status" -eq 3 ]; then
+    ask_make_tmp || { log "cancelled"; exit 0; }
+    send_files
     status=$?
   fi
   [ "$status" -eq 2 ] && { log "cancelled"; exit 0; }
@@ -411,12 +436,19 @@ if [ $? -ne 0 ] || [ ! -s "$local_file" ]; then
   fail "$(msg up_nothing "$LOG")"
 fi
 
-# 1回の接続で リモートの ~/tmp 作成 + 転送 + ホームのパス取得 をまとめて行う。
+# 1回の接続で ~/tmp の確かめ + 転送 + ホームのパス取得 をまとめて行う。
 # リモートの rc が出力するゴミ (iTerm2 の SetProfile など) を除くため @@ を目印にする
 fname=$(basename "$local_file")
-remote_home=$(ssh -o BatchMode=yes -o ConnectTimeout=10 -o ClearAllForwardings=yes "$SERVER" \
-  "mkdir -p \"\$HOME/tmp\" && cat > \"\$HOME/tmp/$fname\" && echo \"@@\$HOME\"" \
-  < "$local_file" | sed -n 's/^@@//p' | tail -1)
+send_image() {
+  ssh -o BatchMode=yes -o ConnectTimeout=10 -o ClearAllForwardings=yes "$SERVER" \
+    "$(tmp_ready) && cat > \"\$HOME/tmp/$fname\" && echo \"@@\$HOME\"" \
+    < "$local_file" | sed -n 's/^@@//p' | tail -1
+}
+remote_home=$(send_image)
+if [ "$remote_home" = NOTMP ]; then
+  ask_make_tmp || { rm -f "$local_file"; log "cancelled"; exit 0; }
+  remote_home=$(send_image)
+fi
 
 rm -f "$local_file"
 
