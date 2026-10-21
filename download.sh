@@ -223,11 +223,6 @@ if (selLen > selMax) {
     for (var i = 1; i <= k; i++) s += ((m >> (i - 1)) & 1 ? " " : "") + parts[i];
     return s;
   });
-  // Claude Code などが出す「パス:行番号」の行番号を外した形も試す
-  bases.slice().forEach(function (b) {
-    var stripped = b.replace(/:\d+(:\d+)?$/, "");
-    if (stripped !== b) bases.push(stripped);
-  });
   bases = bases.filter(function (b, i) { return b && bases.indexOf(b) === i; });
 
   var shq = function (s) { return "'" + s.replace(/'/g, "'\\''") + "'"; };
