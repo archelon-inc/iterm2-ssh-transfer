@@ -43,4 +43,6 @@ iTerm2 で SSH 先に入っているタブから、キー 1 つで Mac とのあ
 
 ## ライセンス
 
-[MIT](LICENSE)
+[zlib](LICENSE)
+
+直した版を配るときは、zlib ライセンスの 2 条のとおり、直したことが分かるようにしてください。LICENSE に、あなたの Copyright の行を足す形をおすすめします。
