@@ -1,48 +1,59 @@
 # iterm2-ssh-transfer
 
-iTerm2 で SSH 先に入っているタブから、キー 1 つで Mac とのあいだのファイルをやり取りするスクリプトです。scp のコマンドを打つ必要はありません。
+[日本語版はこちら](README.ja.md)
 
-| スクリプト | キーの例 | すること |
+Scripts that move files between your Mac and the SSH host of an iTerm2 tab with a single key. No `scp` commands to type.
+
+| Script | Example key | What it does |
 |---|---|---|
-| `upload.sh` | ⌘⇧V | クリップボードの画像、または Finder でコピーしたファイルやフォルダを、SSH 先の `~/tmp` に送る。送った先のパスがターミナルに入力される |
-| `download.sh` | ⌘⇧D | 画面で選んだパスのファイルやフォルダを、SSH 先から Mac の `~/Downloads` に落とす。選んだのが URL なら Mac のブラウザで開く |
+| `upload.sh` | ⌘⇧V | Sends the image on the clipboard, or the files and folders copied in Finder, to `~/tmp` on the SSH host, then types the remote path into the terminal |
+| `download.sh` | ⌘⇧D | Downloads the file or folder whose path you selected on screen from the SSH host to `~/Downloads` on your Mac. If you selected a URL, opens it in your Mac's browser |
 
-- 送り先・落とし元は、そのタブで今動いている `ssh` の接続先です。tmux 統合 (`tmux -CC`) のタブでも使えます。
-- フォルダや 10 MB を超えるものは、大きさを見せて確認してから、中断できる進み具合の窓を出しながら送ります。
-- Mac のファイル名の濁点・半濁点 (NFD) は、送るときに NFC に直します。
-- 選んだパスが画面の折り返しで改行や字下げをまたいでいても、SSH 先に実在するものが 1 つに決まれば落とします。
+- The SSH host is whatever the `ssh` running in that tab is connected to. Tabs using tmux integration (`tmux -CC`) work too.
+- Folders and anything over 10 MB are confirmed first with their size, then sent with a progress window you can stop.
+- File names in the decomposed form macOS sometimes uses (NFD) are converted to the composed form (NFC) when sent.
+- A selected path that wraps across lines on screen still works, as long as it matches exactly one file or folder on the host.
+- Messages appear in Japanese if Japanese is first in your Mac's preferred languages, and in English otherwise.
 
-## 必要なもの
+## Requirements
 
-- macOS と iTerm2
-- パスワードを聞かれずに入れる SSH の接続 (鍵や ssh-agent)。スクリプトは `BatchMode=yes` で別の接続を張ります
-- SSH 先に `sh`・`tar`・`base64`・`mktemp`・`du`・`find`
+- macOS and iTerm2
+- SSH access that does not ask for a password (keys or ssh-agent). The scripts open their own connection with `BatchMode=yes`
+- `sh`, `tar`, `base64`, `mktemp`, `du`, and `find` on the SSH host
 
-## 入れ方
+## Setup
 
-1. clone します。
+1. Clone the repository.
 
    ```sh
    git clone https://github.com/archelon-inc/iterm2-ssh-transfer.git ~/iterm2-ssh-transfer
    ```
 
-2. iTerm2 の Settings > Keys > Key Bindings で「+」を押し、スクリプトごとにキーを割り当てます。
+2. In iTerm2, open Settings > Keys > Key Bindings, press "+", and assign a key to each script.
 
-   - Keyboard Shortcut: 好きなキー (例: ⌘⇧V、⌘⇧D)
+   - Keyboard Shortcut: any key (e.g. ⌘⇧V, ⌘⇧D)
    - Action: Run Coprocess
-   - その下の欄 (Enter command to run): スクリプトのフルパス (例: `/Users/you/iterm2-ssh-transfer/upload.sh`)。引数は付けません
+   - The field below it (Enter command to run): the full path of the script (e.g. `/Users/you/iterm2-ssh-transfer/upload.sh`), with no arguments
 
-3. iTerm2 の Settings > Advanced の「Maximum number of bytes of selection to provide to Python API」(日本語表示では「Python API に渡す選択範囲の最大バイト数」) を大きくします。初期値の 100 のままだと、長いパスが途中で切れて `download.sh` に届きます。切れていたときは `download.sh` がダイアログで知らせ、「設定を開く」でこの欄を出します (iTerm2 にアクセシビリティの許可が要ります)。
+3. In iTerm2 Settings > Advanced, increase "Maximum number of bytes of selection to provide to Python API". With the default of 100, long paths reach `download.sh` cut off. When that happens, `download.sh` tells you in a dialog, and "Open Settings" shows this field (iTerm2 needs Accessibility permission for this).
 
-## 失敗したとき
+## When something fails
 
-`upload.sh` は理由をターミナルに `# upload: …` と入力し、`download.sh` はダイアログで知らせます。詳しいことは次のログにあります。
+`upload.sh` types the reason into the terminal as `# upload: …`, and `download.sh` shows it in a dialog. Details are in these logs:
 
 - `/tmp/iterm2-upload.log`
 - `/tmp/iterm2-download.log`
 
-## ライセンス
+## Changing the messages
+
+All on-screen messages, in both Japanese and English, are in `messages.sh`. After editing it, this test checks that both languages still match:
+
+```sh
+test/messages.test.sh
+```
+
+## License
 
 [zlib](LICENSE)
 
-直した版を配るときは、zlib ライセンスの 2 条のとおり、直したことが分かるようにしてください。LICENSE に、あなたの Copyright の行を足す形をおすすめします。
+If you distribute a modified version, mark it as modified, as clause 2 of the zlib license requires. We recommend adding your own Copyright line to LICENSE.

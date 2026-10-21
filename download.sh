@@ -20,14 +20,17 @@ SELECTION_LIMIT=4096
 # Coprocess の stdout が閉じると、iTerm2 は Coprocess が終わったとみなして止めてしまうため
 exec 3>&1 >>"$LOG" 2>&1
 echo "=== $(date '+%F %T') pid=$$ ==="
+# 画面に出す文 (日本語と英語)。リンクから呼ばれても見つかるよう、実体の場所から読む
+. "$(dirname "$(perl -MCwd=abs_path -e 'print abs_path(shift)' "$0")")/messages.sh"
+msg_init "$(defaults read -g AppleLanguages 2>/dev/null)"
 
 # 失敗を知らせるダイアログ
 alert() {
-  osascript - "$1" <<'APPLESCRIPT' >/dev/null
+  osascript - "$1" "$(msg btn_close)" <<'APPLESCRIPT' >/dev/null
 on run argv
   tell application "System Events"
     activate
-    display dialog (item 1 of argv) buttons {"閉じる"} default button "閉じる" with icon caution with title "iTerm2 download"
+    display dialog (item 1 of argv) buttons {item 2 of argv} default button (item 2 of argv) with icon caution with title "iTerm2 download"
   end tell
 end run
 APPLESCRIPT
@@ -35,36 +38,38 @@ APPLESCRIPT
 
 # 落とし終えたことを知らせ、「Finder で開く」なら Finder でそのファイルを選んだ状態で開く
 done_dialog() {
-  answer=$(osascript - "$1" <<'APPLESCRIPT'
+  local show
+  show=$(msg btn_show_in_finder)
+  answer=$(osascript - "$1" "$(msg btn_close)" "$show" <<'APPLESCRIPT'
 on run argv
   tell application "System Events"
     activate
-    display dialog (item 1 of argv) buttons {"閉じる", "Finder で開く"} default button "Finder で開く" with title "iTerm2 download"
+    display dialog (item 1 of argv) buttons {item 2 of argv, item 3 of argv} default button (item 3 of argv) with title "iTerm2 download"
   end tell
   return button returned of result
 end run
 APPLESCRIPT
   )
-  [ "$answer" = "Finder で開く" ] && open -R "$2"
+  [ "$answer" = "$show" ] && open -R "$2"
 }
 
 # 選んだ文字が上限で切れていたことを知らせ、「設定を開く」なら iTerm2 の設定の上限の行を出す。
 # 設定画面で変えた値は、動いている iTerm2 にすぐ効く (defaults write は起動し直すまで効かない)
 selection_limit_dialog() {
   echo "fail: selection truncated at $1"
-  answer=$(osascript - "$1" <<'APPLESCRIPT'
+  local open_settings
+  open_settings=$(msg btn_open_settings)
+  answer=$(osascript - "$(msg down_truncated "$1")" "$(msg btn_close)" "$open_settings" <<'APPLESCRIPT'
 on run argv
-  set msg to "選んだ文字のうち、iTerm2 から届いたのは最初の " & (item 1 of argv) & " 文字だけでした。" & return & return & ¬
-    "iTerm2 の設定の「詳細」(Advanced) にある「Python API に渡す選択範囲の最大バイト数」(Maximum number of bytes of selection to provide to Python API) を大きくしてから、選び直してください。"
   tell application "System Events"
     activate
-    display dialog msg buttons {"閉じる", "設定を開く"} default button "設定を開く" with icon caution with title "iTerm2 download"
+    display dialog (item 1 of argv) buttons {item 2 of argv, item 3 of argv} default button (item 3 of argv) with icon caution with title "iTerm2 download"
   end tell
   return button returned of result
 end run
 APPLESCRIPT
   )
-  [ "$answer" = "設定を開く" ] || exit 1
+  [ "$answer" = "$open_settings" ] || exit 1
   # 設定画面のタブや部品の名前は表示言語で変わるので、位置で選ぶ。「詳細」はツールバーの最後のボタン
   osascript <<'APPLESCRIPT' >/dev/null
 tell application "iTerm2" to activate
@@ -90,11 +95,11 @@ fail() {
 
 # 前面に出る OK / キャンセルのダイアログ。キャンセルなら非 0 で返る
 confirm() {
-  osascript - "$1" <<'APPLESCRIPT' >/dev/null
+  osascript - "$1" "$(msg btn_cancel)" "$(msg btn_download)" <<'APPLESCRIPT' >/dev/null
 on run argv
   tell application "System Events"
     activate
-    display dialog (item 1 of argv) buttons {"キャンセル", "落とす"} default button "落とす" cancel button "キャンセル" with title "iTerm2 download"
+    display dialog (item 1 of argv) buttons {item 2 of argv, item 3 of argv} default button (item 3 of argv) cancel button (item 2 of argv) with title "iTerm2 download"
   end tell
 end run
 APPLESCRIPT
@@ -112,7 +117,7 @@ shq() {
   printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
 }
 
-[ -n "${ITERM_SESSION_ID:-}" ] || fail "起動元のセッションが分かりません (ITERM_SESSION_ID なし)"
+[ -n "${ITERM_SESSION_ID:-}" ] || fail "$(msg no_session_id)"
 
 # 起動元セッションの tty・今いるディレクトリ・選んでいる文字を 1 回で取る。
 # 選んでいる文字は改行を含みうるので、区切りには US (0x1f) を使う。
@@ -164,8 +169,8 @@ selection=${rest#*"$US"}
 selection=${selection%"$US"}
 echo "session: tty=[$session_tty] cwd=[$cwd] selectionLength=[$selection_length] selection=[$selection]"
 
-[ -n "$session" ] || fail "起動元のセッションが見つかりません"
-[ -n "$selection" ] || fail "文字が選ばれていません"
+[ -n "$session" ] || fail "$(msg no_session)"
+[ -n "$selection" ] || fail "$(msg down_no_selection)"
 
 # 選んだ文字から、URL か、リモートで実行する探索スクリプトを作る (1 行目が種類)
 # macOS の /bin/bash (3.2) は $( ) の中のヒアドキュメントにある引用符を読み違えるので、
@@ -198,7 +203,7 @@ var text = trimEnds(sel);
 var result;
 // iTerm2 は選んだ文字を上限の数までしか渡さない
 if (selLen > selMax) {
-  result = "error\n選んだ文字が長すぎます (" + selLen + " 文字。" + selMax + " 文字まで)";
+  result = "too_long\n" + selLen;
 } else if (selLen > sel.length) {
   result = "truncated\n" + sel.length;
 } else if (/^https?:\/\//.test(text)) {
@@ -237,7 +242,7 @@ if (selLen > selMax) {
 
   var exact = bases.map(head);
   if (exact.indexOf(null) >= 0) {
-    result = "error\n相対パスですが、今いるディレクトリが分かりません";
+    result = "no_cwd\n";
   } else {
     result = "remote\n" + bases[0] + "\n" + [
       "n=0; hit=",
@@ -262,13 +267,14 @@ echo "$body"
 
 case "$kind" in
   url)
-    open "$body" || fail "URL を開けませんでした: $body"
+    open "$body" || fail "$(msg down_url_failed "$body")"
     exit 0
     ;;
   remote) ;;
-  error) fail "$body" ;;
+  too_long) fail "$(msg down_too_long "$body" "$SELECTION_LIMIT")" ;;
   truncated) selection_limit_dialog "$body" ;;
-  *) fail "選んだ文字を読めませんでした (詳細: $LOG)" ;;
+  no_cwd) fail "$(msg down_no_cwd)" ;;
+  *) fail "$(msg down_unreadable "$LOG")" ;;
 esac
 
 # ps の ssh コマンド行から接続先 (エイリアス or user@host) を取り出す
@@ -291,13 +297,13 @@ case "$session_tty" in
     case "$session_tty" in tty*) session_tty="/dev/$session_tty" ;; *) session_tty="" ;; esac
     ;;
 esac
-[ -n "$session_tty" ] || fail "セッションの tty が分かりません"
+[ -n "$session_tty" ] || fail "$(msg no_tty)"
 
 cmd=$(ps -t "${session_tty#/dev/}" -o command= | grep -E '^([^ ]*/)?ssh( |$)' | grep -v -- ' -W ' | head -1)
 echo "tty lookup: tty=[$session_tty] ssh=[$cmd]"
-[ -n "$cmd" ] || fail "ローカルセッションです (SSH 先からは落としません)"
+[ -n "$cmd" ] || fail "$(msg local_session)"
 SERVER=$(parse_ssh_dest "$cmd")
-[ -n "$SERVER" ] || fail "SSH の接続先を判定できませんでした"
+[ -n "$SERVER" ] || fail "$(msg no_ssh_dest)"
 
 # 探索を ssh 1 接続で行う。当たりがちょうど 1 つで、確認の要らない大きさのファイルなら、同じ接続で中身も受け取る。
 # リモートの rc が出すゴミと混ざらないよう、結果は @@ で始まる行で、中身は @@BEGIN〜@@END の間に base64 で受け取る
@@ -317,17 +323,17 @@ printf '@@FILE %s\n' "\$bytes"
 printf '\n@@BEGIN\n'; base64 < "\$hit"; printf '\n@@END\n'
 REMOTE
 } | ssh -o BatchMode=yes -o ConnectTimeout=10 "$SERVER" 'sh -s' >"$response" \
-  || fail "$SERVER への接続に失敗しました (詳細: $LOG)"
+  || fail "$(msg down_connect_failed "$SERVER" "$LOG")"
 
 hits=$(sed -n 's/^@@CAND //p' "$response")
 count=$(printf '%s' "$hits" | grep -c .)
 echo "hits: count=[$count]"
 echo "$hits"
 case "$count" in
-  0) fail "「${wanted}」は $SERVER にありません。選び直してください" ;;
+  0) fail "$(msg down_not_found "$wanted" "$SERVER")" ;;
   1) ;;
-  *) fail "「${wanted}」に当たるものが $count 個あり、決められません。選び直してください
-$(printf '%s\n' "$hits" | while IFS= read -r h; do echo "・$(basename "$h")"; done)" ;;
+  *) fail "$(msg down_ambiguous "$wanted" "$count")
+$(printf '%s\n' "$hits" | while IFS= read -r h; do echo "- $(basename "$h")"; done)" ;;
 esac
 
 # ~/Downloads に同じ名前があれば「名前 (1).拡張子」のようにずらす
@@ -344,10 +350,10 @@ done
 # 進み具合の窓 (JXA)。受け取り中のファイルの大きさを見て進み具合を出し、中断を押すと窓ごと終わる
 IFS= read -r -d '' progress_js <<'JXA'
 // 受け取り中のファイルの大きさを見て、進み具合の窓を出す。中断を押すと窓ごと終わる
-// 引数: <受け取り中のファイル> <全体のバイト数> <見出し>
+// 引数: <受け取り中のファイル> <全体のバイト数> <見出し> <中断ボタンの文字>
 ObjC.import("Cocoa");
 function run(argv) {
-  var path = argv[0], total = Number(argv[1]), label = argv[2];
+  var path = argv[0], total = Number(argv[1]), label = argv[2], stopLabel = argv[3];
   var app = $.NSApplication.sharedApplication;
   app.setActivationPolicy($.NSApplicationActivationPolicyAccessory);
 
@@ -388,7 +394,7 @@ function run(argv) {
           var got = attrs.isNil() ? 0 : Number(ObjC.unwrap(attrs.objectForKey($.NSFileSize)));
           var pct = total > 0 ? Math.min(99, Math.floor(got * 100 / total)) : 0;
           bar.doubleValue = pct;
-          status.stringValue = size(got) + " / " + size(total) + "（" + pct + "%）";
+          status.stringValue = size(got) + " / " + size(total) + " (" + pct + "%)";
         }
       },
       "cancel:": {
@@ -399,7 +405,7 @@ function run(argv) {
   });
   var target = $.DownloadProgress.alloc.init;
 
-  var cancel = $.NSButton.buttonWithTitleTargetAction("中断", target, "cancel:");
+  var cancel = $.NSButton.buttonWithTitleTargetAction(stopLabel, target, "cancel:");
   cancel.frame = $.NSMakeRect(320, 12, 100, 32);
   view.addSubview(cancel);
 
@@ -419,7 +425,7 @@ receive_with_progress() {
   shift 3
   ( set -o pipefail; "$@" ) &
   local receiver=$!
-  osascript -l JavaScript -e "$progress_js" "$file" "$total" "$label" &
+  osascript -l JavaScript -e "$progress_js" "$file" "$total" "$label" "$(msg btn_stop)" &
   local window=$!
   while kill -0 "$receiver" 2>/dev/null; do
     if [ -n "$window" ] && ! kill -0 "$window" 2>/dev/null; then
@@ -456,33 +462,33 @@ if [ -n "$dir_info" ]; then
   # 進み具合を du の大きさと比べられるよう、圧縮はしない
   dir_kb=${dir_info%% *}
   dir_files=${dir_info#* }
-  confirm "$name/ は $(human_size $((dir_kb * 1024)))・ファイル $dir_files 個です。~/Downloads に落としますか？" \
+  confirm "$(msg down_confirm "$name/" "$(msg size_files "$(human_size $((dir_kb * 1024)))" "$dir_files")")" \
     || { echo "cancelled"; exit 0; }
   work=$(mktemp -d "$HOME/Downloads/.download.XXXXXX")
-  receive_with_progress "$work/stream.tar" $((dir_kb * 1024)) "$name/ を落としています" fetch_to "p=$remote_path
+  receive_with_progress "$work/stream.tar" $((dir_kb * 1024)) "$(msg down_progress "$name/")" fetch_to "p=$remote_path
 cd \"\$(dirname \"\$p\")\" && printf '\\n@@BEGIN\\n' && tar cf - \"./\$(basename \"\$p\")\" | base64 && printf '\\n@@END\\n'" \
     "$work/stream.tar"
   status=$?
   [ "$status" -eq 2 ] && { rm -rf "$work"; echo "cancelled"; exit 0; }
   [ "$status" -eq 0 ] && tar xf "$work/stream.tar" -C "$work" && rm "$work/stream.tar" \
     && [ -d "$work/$name" ] && mv "$work/$name" "$dest" && rmdir "$work" \
-    || { rm -rf "$work"; fail "$name/ の受け取りに失敗しました (詳細: $LOG)"; }
+    || { rm -rf "$work"; fail "$(msg down_failed "$name/" "$LOG")"; }
 else
   partial="$dest.part"
   if [ "$file_bytes" -le "$CONFIRM_BYTES" ]; then
     sed -n '/^@@BEGIN$/,/^@@END$/{/^@@/d;p;}' "$response" | base64 -D >"$partial"
   else
     # 大きいファイル: 大きさを見せて確認してから、進み具合の窓を出しながら改めて受け取る
-    confirm "$name は $(human_size "$file_bytes") あります。~/Downloads に落としますか？" \
+    confirm "$(msg down_confirm "$name" "$(human_size "$file_bytes")")" \
       || { echo "cancelled"; exit 0; }
-    receive_with_progress "$partial" "$file_bytes" "$name を落としています" fetch_to "p=$remote_path
+    receive_with_progress "$partial" "$file_bytes" "$(msg down_progress "$name")" fetch_to "p=$remote_path
 printf '\\n@@BEGIN\\n'; base64 < \"\$p\"; printf '\\n@@END\\n'" \
       "$partial"
     [ $? -eq 2 ] && { rm -f "$partial"; echo "cancelled"; exit 0; }
   fi
   [ "$(wc -c <"$partial" | tr -d ' ')" = "$file_bytes" ] && mv "$partial" "$dest" \
-    || { rm -f "$partial"; fail "$name の受け取りに失敗しました (詳細: $LOG)"; }
+    || { rm -f "$partial"; fail "$(msg down_failed "$name" "$LOG")"; }
 fi
 
 echo "saved: $dest"
-done_dialog "$(basename "$dest") を ~/Downloads に落としました" "$dest"
+done_dialog "$(msg down_done "$(basename "$dest")")" "$dest"

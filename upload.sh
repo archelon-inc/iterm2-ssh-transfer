@@ -13,6 +13,9 @@ LOG=/tmp/iterm2-upload.log
 CONFIRM_BYTES=$((10 * 1024 * 1024))
 exec 2>>"$LOG"
 echo "=== $(date '+%F %T') pid=$$ ===" >>"$LOG"
+# 画面に出す文 (日本語と英語)。リンクから呼ばれても見つかるよう、実体の場所から読む
+. "$(dirname "$(perl -MCwd=abs_path -e 'print abs_path(shift)' "$0")")/messages.sh"
+msg_init "$(defaults read -g AppleLanguages 2>/dev/null)"
 
 log() {
   printf '%s\n' "$*" >>"$LOG"
@@ -54,7 +57,7 @@ case "$session_tty" in
     case "$session_tty" in tty*) session_tty="/dev/$session_tty" ;; *) session_tty="" ;; esac
     ;;
 esac
-[ -n "$session_tty" ] || fail "セッションの tty が分かりません"
+[ -n "$session_tty" ] || fail "$(msg no_tty)"
 
 # ps の ssh コマンド行から接続先 (エイリアス or user@host) を取り出す
 parse_ssh_dest() {
@@ -73,9 +76,9 @@ parse_ssh_dest() {
 # 接続先を決められなければ、誤送信を避けるため送らない
 cmd=$(ps -t "${session_tty#/dev/}" -o command= | grep -E '^([^ ]*/)?ssh( |$)' | grep -v -- ' -W ' | head -1)
 log "tty lookup: tty=[$session_tty] ssh=[$cmd]"
-[ -n "$cmd" ] || fail "ローカルセッションです (SSH 先へは送りません)"
+[ -n "$cmd" ] || fail "$(msg local_session)"
 SERVER=$(parse_ssh_dest "$cmd")
-[ -n "$SERVER" ] || fail "SSH の接続先を判定できませんでした"
+[ -n "$SERVER" ] || fail "$(msg no_ssh_dest)"
 
 # クリップボードが Finder でコピーしたファイル (複数可) かどうかを先に判定する。
 # AppleScript の `the clipboard as furl` は先頭 1 件しか取れないため、
@@ -104,11 +107,11 @@ done <<< "$finder_files"
 
 # 前面に出る OK / キャンセルのダイアログ。キャンセルなら非 0 で返る
 confirm() {
-  osascript - "$1" <<'APPLESCRIPT' >/dev/null
+  osascript - "$1" "$(msg btn_cancel)" "$(msg btn_send)" <<'APPLESCRIPT' >/dev/null
 on run argv
   tell application "System Events"
     activate
-    display dialog (item 1 of argv) buttons {"キャンセル", "送る"} default button "送る" cancel button "キャンセル" with title "iTerm2 upload"
+    display dialog (item 1 of argv) buttons {item 2 of argv, item 3 of argv} default button (item 3 of argv) cancel button (item 2 of argv) with title "iTerm2 upload"
   end tell
 end run
 APPLESCRIPT
@@ -228,10 +231,10 @@ send_all() {
 
 # 進み具合の窓 (JXA)。$count_file に書かれた送ったバイト数を見て進み具合を出し、中断を押すと窓ごと終わる
 IFS= read -r -d '' progress_js <<'JXA'
-// 引数: <送ったバイト数を書いたファイル> <全体のバイト数> <見出し>
+// 引数: <送ったバイト数を書いたファイル> <全体のバイト数> <見出し> <中断ボタンの文字>
 ObjC.import("Cocoa");
 function run(argv) {
-  var path = argv[0], total = Number(argv[1]), label = argv[2];
+  var path = argv[0], total = Number(argv[1]), label = argv[2], stopLabel = argv[3];
   var app = $.NSApplication.sharedApplication;
   app.setActivationPolicy($.NSApplicationActivationPolicyAccessory);
 
@@ -272,7 +275,7 @@ function run(argv) {
           var got = s.isNil() ? 0 : Number(s.js) || 0;
           var pct = total > 0 ? Math.min(99, Math.floor(got * 100 / total)) : 0;
           bar.doubleValue = pct;
-          status.stringValue = size(got) + " / " + size(total) + "（" + pct + "%）";
+          status.stringValue = size(got) + " / " + size(total) + " (" + pct + "%)";
         }
       },
       "cancel:": {
@@ -283,7 +286,7 @@ function run(argv) {
   });
   var target = $.UploadProgress.alloc.init;
 
-  var cancel = $.NSButton.buttonWithTitleTargetAction("中断", target, "cancel:");
+  var cancel = $.NSButton.buttonWithTitleTargetAction(stopLabel, target, "cancel:");
   cancel.frame = $.NSMakeRect(320, 12, 100, 32);
   view.addSubview(cancel);
 
@@ -309,7 +312,7 @@ send_with_progress() {
   local total=$1 label=$2
   send_all &
   local sender=$!
-  osascript -l JavaScript -e "$progress_js" "$count_file" "$total" "$label" >/dev/null &
+  osascript -l JavaScript -e "$progress_js" "$count_file" "$total" "$label" "$(msg btn_stop)" >/dev/null &
   local window=$!
   while kill -0 "$sender" 2>/dev/null; do
     if [ -n "$window" ] && ! kill -0 "$window" 2>/dev/null; then
@@ -360,13 +363,13 @@ if [ "${#finder_paths[@]}" -gt 0 ]; then
       what=$(basename "${finder_paths[0]}")
       [ "$dirs" -eq 1 ] && what="$what/"
     else
-      what="${#finder_paths[@]} 個"
+      what=$(msg up_items "${#finder_paths[@]}")
     fi
     detail=$(human_size "$total")
-    [ "$dirs" -gt 0 ] && detail="${detail}・ファイル $files 個"
-    confirm "${what} は ${detail}です。$SERVER の ~/tmp に送りますか？" \
+    [ "$dirs" -gt 0 ] && detail=$(msg size_files "$detail" "$files")
+    confirm "$(msg up_confirm "$what" "$detail" "$SERVER")" \
       || { log "cancelled"; exit 0; }
-    send_with_progress "$total" "${what} を $SERVER に送っています"
+    send_with_progress "$total" "$(msg up_progress "$what" "$SERVER")"
     status=$?
   else
     send_all
@@ -374,7 +377,7 @@ if [ "${#finder_paths[@]}" -gt 0 ]; then
   fi
   [ "$status" -eq 2 ] && { log "cancelled"; exit 0; }
   [ "$status" -eq 0 ] \
-    || fail "$SERVER への転送に失敗しました ($(cat "$failed" 2>/dev/null)) (詳細: /tmp/iterm2-upload.log)"
+    || fail "$(msg up_failed_item "$(cat "$failed" 2>/dev/null)" "$SERVER" "$LOG")"
 
   # ファイル名に " $ ` などがあっても崩れないよう、" の中で特別な意味を持つ文字を \ でエスケープする
   out=""
@@ -399,13 +402,13 @@ on error errMsg
   try
     close access POSIX file "$local_file"
   end try
-  error "クリップボードに画像がありません: " & errMsg
+  error "no PNG on the clipboard: " & errMsg
 end try
 EOF
 
 if [ $? -ne 0 ] || [ ! -s "$local_file" ]; then
   rm -f "$local_file"
-  fail "クリップボードにファイルも画像もありません (詳細: /tmp/iterm2-upload.log)"
+  fail "$(msg up_nothing "$LOG")"
 fi
 
 # 1回の接続で リモートの ~/tmp 作成 + 転送 + ホームのパス取得 をまとめて行う。
@@ -418,7 +421,7 @@ remote_home=$(ssh -o BatchMode=yes -o ConnectTimeout=10 -o ClearAllForwardings=y
 rm -f "$local_file"
 
 if [ -z "$remote_home" ]; then
-  fail "$SERVER への転送に失敗しました (詳細: /tmp/iterm2-upload.log)"
+  fail "$(msg up_failed "$SERVER" "$LOG")"
 fi
 
 # Coprocess 経由ならこれがターミナルに入力される
