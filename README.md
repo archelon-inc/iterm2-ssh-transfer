@@ -30,7 +30,7 @@ iTerm2 で SSH 先に入っているタブから、キー 1 つで Mac とのあ
 
    - Keyboard Shortcut: 好きなキー (例: ⌘⇧V、⌘⇧D)
    - Action: Run Coprocess
-   - Command: スクリプトのフルパス (例: `/Users/you/iterm2-ssh-transfer/upload.sh`)。引数は付けません
+   - その下の欄 (Enter command to run): スクリプトのフルパス (例: `/Users/you/iterm2-ssh-transfer/upload.sh`)。引数は付けません
 
 3. iTerm2 の Settings > Advanced の「Maximum number of bytes of selection to provide to Python API」(日本語表示では「Python API に渡す選択範囲の最大バイト数」) を大きくします。初期値の 100 のままだと、長いパスが途中で切れて `download.sh` に届きます。切れていたときは `download.sh` がダイアログで知らせ、「設定を開く」でこの欄を出します (iTerm2 にアクセシビリティの許可が要ります)。
 
