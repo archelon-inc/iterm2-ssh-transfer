@@ -201,7 +201,7 @@ tmp_ready() {
 
 # ~/tmp が無かったと知らせ、作ってよいかを聞く。よければ make_tmp=yes にする
 ask_make_tmp() {
-  confirm "$(msg up_no_tmp "$SERVER")" "$(msg btn_create_and_send)" || return 1
+  confirm "$(msg up_no_tmp "$SERVER")" "$(msg btn_create)" || return 1
   log "make ~/tmp"
   make_tmp=yes
 }

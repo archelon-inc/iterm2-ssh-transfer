@@ -25,8 +25,8 @@ msg() {
     en:btn_stop) s='Stop' ;;
     ja:btn_send) s='送る' ;;
     en:btn_send) s='Send' ;;
-    ja:btn_create_and_send) s='作って送る' ;;
-    en:btn_create_and_send) s='Create and Send' ;;
+    ja:btn_create) s='作る' ;;
+    en:btn_create) s='Create' ;;
     ja:btn_download) s='落とす' ;;
     en:btn_download) s='Download' ;;
     ja:btn_show_in_finder) s='Finder で開く' ;;
@@ -51,8 +51,8 @@ msg() {
     en:up_items) s='{1} items' ;;
     ja:up_confirm) s='{1} は {2}です。{3} の ~/tmp に送りますか？' ;;
     en:up_confirm) s='{1} ({2}). Send to ~/tmp on {3}?' ;;
-    ja:up_no_tmp) s='{1} に ~/tmp がありません。作ってから送りますか？' ;;
-    en:up_no_tmp) s='~/tmp does not exist on {1}. Create it and send?' ;;
+    ja:up_no_tmp) s='{1} に送り先の ~/tmp がありません。作りますか？' ;;
+    en:up_no_tmp) s='~/tmp, where files are sent, does not exist on {1}. Create it?' ;;
     ja:up_progress) s='{1} を {2} に送っています' ;;
     en:up_progress) s='Sending {1} to {2}' ;;
     ja:up_failed_item) s='{1} を {2} に送れませんでした (詳細: {3})' ;;
