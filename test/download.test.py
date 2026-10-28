@@ -41,7 +41,8 @@ elif name == "ssh":
         raise SystemExit("試験で許していない接続先です")
     raise SystemExit(subprocess.call(["/bin/sh", "-s"]))
 elif name == "open":
-    pass
+    with open(os.environ["TRANSFER_TEST_OPENED"], "a") as log:
+        log.write(json.dumps(args, ensure_ascii=False) + "\n")
 elif name in ("board", "pbpaste"):
     if name == "board":
         if args != ["selection", "--socket", "/tmp/fixture.sock", "--pane", "%2"]:
@@ -67,6 +68,7 @@ class DownloadTest(unittest.TestCase):
         self.prefix = "iterm2-test-" + uuid.uuid4().hex + "-"
         self.addCleanup(self.remove_downloads)
         self.dialogs = self.root / "dialogs.jsonl"
+        self.opened = self.root / "opened.jsonl"
         binaries = self.root / "bin"
         binaries.mkdir()
         mock = binaries / "mock-command.py"
@@ -80,6 +82,7 @@ class DownloadTest(unittest.TestCase):
             "ITERM_SESSION_ID": "fixture",
             "TRANSFER_TEST_REMOTE": str(self.remote),
             "TRANSFER_TEST_DIALOGS": str(self.dialogs),
+            "TRANSFER_TEST_OPENED": str(self.opened),
             "TRANSFER_TEST_PANE": "",
             "TRANSFER_TEST_MICRO": "",
             "TRANSFER_TEST_MICRO_ERROR": "0",
@@ -229,6 +232,17 @@ class DownloadTest(unittest.TestCase):
         with log.open("rb") as handle:
             handle.seek(offset)
             self.assertNotIn(text.encode(), handle.read())
+
+    def test_local_micro_selection_opens_its_url(self):
+        url = "https://example.test/micro"
+        self.environment.update(
+            TRANSFER_TEST_PANE="2", TRANSFER_TEST_MICRO=url,
+            TRANSFER_TEST_CLIPBOARD="https://example.test/clipboard",
+            TRANSFER_TEST_SSH_COMMAND="tmux -CC -S /tmp/fixture.sock attach-session",
+        )
+        result = self.download("")
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual([json.loads(line) for line in self.opened.read_text().splitlines()], [[url]])
 
 
 if __name__ == "__main__":

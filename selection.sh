@@ -36,9 +36,14 @@ resolve_ssh_context() {
 }
 
 read_micro_selection() {
-  local micro_socket response payload parsed micro_cwd
+  local micro_socket response payload parsed micro_cwd context_cmd
   [ -n "$tmux_pane" ] || return 0
-  resolve_ssh_context || return 0
+  resolve_ssh_context
+  context_cmd=$cmd
+  if [ -z "$SERVER" ] && [ -n "$session_tty" ]; then
+    context_cmd=$(ps -t "${session_tty#/dev/}" -o command= | grep -E '^([^ ]*/)?tmux( |$)' | head -1)
+  fi
+  [ -n "$context_cmd" ] || return 0
   # tmux -CC を起動した接続と同じ socket に限定し、別 server の同じ pane 番号を読まない。
   micro_socket=$(perl -MText::ParseWords=shellwords -e '
     sub find_socket {
@@ -59,7 +64,7 @@ read_micro_selection() {
       return "";
     }
     print find_socket($ARGV[0], 0);
-  ' "$cmd")
+  ' "$context_cmd")
   [ -n "$micro_socket" ] || return 0
   case "$tmux_pane" in %*) ;; *) tmux_pane="%$tmux_pane" ;; esac
 
@@ -76,7 +81,7 @@ REMOTE
     printf 'if [ -n "$provider" ]; then "$provider" selection --socket %s --pane %s; else printf '\''%%s\\n'\'' '\''{"selection":"","cwd":""}'\''; fi\n' \
       "$(shq "$micro_socket")" "$(shq "$tmux_pane")"
     printf '%s\n' 'status=$?; printf '\''\n@@MICRO_END\n'\''; exit "$status"'
-  } | ssh -o BatchMode=yes -o ClearAllForwardings=yes -o ConnectTimeout=10 "$SERVER" 'sh -s') \
+  } | run_selection_query) \
     || fail "$(msg down_unreadable "$LOG")"
   payload=$(printf '%s\n' "$response" | sed -n '/^@@MICRO$/,/^@@MICRO_END$/{/^@@/d;p;}')
   parsed=$(MICRO_RESULT="$payload" osascript -l JavaScript -e '
@@ -93,6 +98,14 @@ data.cwd + "\u001f" + data.selection + "\u001f";
     cwd=$micro_cwd
     selection_source=micro
     selection_length=""
+  fi
+}
+
+run_selection_query() {
+  if [ -n "$SERVER" ]; then
+    ssh -o BatchMode=yes -o ClearAllForwardings=yes -o ConnectTimeout=10 "$SERVER" 'sh -s'
+  else
+    sh -s
   fi
 }
 
