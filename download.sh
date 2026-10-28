@@ -4,7 +4,7 @@
 #   - ファイルやフォルダのパスなら「今そのタブで SSH 接続中のホスト」から ~/Downloads に落とす
 #     (フォルダと大きいファイルは、大きさを見せて確認してから、進み具合の窓を出しながら落とす)
 # 画面の折り返しで改行や字下げが混ざっていても、つなぎ目だけを「何も無い / 半角・全角スペース1つ」とみなして
-# 候補を作り、リモートに実在するファイルやフォルダがちょうど1つに決まったときだけ落とす。
+# 候補を作り、改行で区切る場合も含めて選択全体の解釈が1つに決まったときだけまとめて落とす。
 # 相対パスは、iTerm2 が覚えているそのセッションの今いるディレクトリ (path 変数) から解決する。
 #
 # キーバインド: このファイル (Action: Run Coprocess、引数なし)
@@ -40,9 +40,10 @@ APPLESCRIPT
 
 # 落とし終えたことを知らせ、「Finder で開く」なら Finder でそのファイルを選んだ状態で開く
 done_dialog() {
-  local show
+  local message=$1 show
+  shift
   show=$(msg btn_show_in_finder)
-  answer=$(osascript - "$1" "$(msg btn_close)" "$show" <<'APPLESCRIPT'
+  answer=$(osascript - "$message" "$(msg btn_close)" "$show" <<'APPLESCRIPT'
 on run argv
   tell application "System Events"
     activate
@@ -52,7 +53,7 @@ on run argv
 end run
 APPLESCRIPT
   )
-  [ "$answer" = "$show" ] && open -R "$2"
+  if [ "$answer" = "$show" ]; then open -R "$@"; fi
 }
 
 # 選んだ文字が上限で切れていたことを知らせ、「設定を開く」なら iTerm2 の設定の上限の行を出す。
@@ -91,7 +92,13 @@ APPLESCRIPT
 
 fail() {
   echo "fail: ダウンロードを停止（理由はダイアログに表示）"
-  alert "$1"
+  local reason=$1
+  if [ "${#saved_paths[@]}" -gt 0 ]; then
+    reason="$reason
+
+$(msg down_saved "${#saved_paths[@]}")"
+  fi
+  alert "$reason"
   exit 1
 }
 
@@ -183,155 +190,74 @@ fi
 [ -n "$selection" ] || fail "$(msg down_no_selection)"
 echo "session: tty=[$session_tty] selection_source=[$selection_source] selectionLength=[$selection_length]"
 
-# 選んだ文字から、URL か、リモートで実行する探索スクリプトを作る (1 行目が種類)
-# macOS の /bin/bash (3.2) は $( ) の中のヒアドキュメントにある引用符を読み違えるので、
-# JXA のソースは先に変数へ読み込んでから渡す
-IFS= read -r -d '' plan_js <<'JXA'
-ObjC.import("Foundation");
-function env(k) {
-  var v = $.NSProcessInfo.processInfo.environment.objectForKey(k);
-  return v.isNil() ? "" : v.js;
-}
-var sel = env("SEL"), cwd = env("CWD"), selMax = Number(env("SELMAX"));
-var selLen = env("SELLEN") === "" ? sel.length : Number(env("SELLEN"));
-
-// 折り返しのつなぎ目: 改行と、その前後の空白・枠線の文字
-var edge = "[ \\t\\u3000\\u2502\\u2503\\u2551]*";
-var junction = new RegExp(edge + "\\r?\\n" + edge, "g");
-
-// 前後の空白・枠線・引用符・括弧と、文末の句読点を外す
-function trimEnds(s) {
-  var prev;
-  do {
-    prev = s;
-    s = s.replace(/^[\s│┃║`'"「『<\[]+/, "").replace(/[\s│┃║`'"」』>\],;:!?。、，．]+$/, "");
-    if (/\)$/.test(s) && s.split("(").length < s.split(")").length) s = s.slice(0, -1);
-    if (/\.$/.test(s)) s = s.slice(0, -1);
-  } while (s !== prev);
-  return s;
-}
-
-var text = trimEnds(sel);
-var result;
-// iTerm2 は選んだ文字を上限の数までしか渡さない
-if (selLen > selMax) {
-  result = "too_long\n" + selLen;
-} else if (selLen > sel.length) {
-  result = "truncated\n" + sel.length;
-} else if (/^https?:\/\//.test(text)) {
-  // URL は空白を含まないので、つなぎ目も残りの空白も全部消す
-  result = "url\n" + text.replace(junction, "").replace(/\s+/g, "");
-} else {
-  var parts = text.split(junction);
-  var k = parts.length - 1;
-
-  // 折り返しで消えた文字は、実在するパスとの照合で決める。8か所を超えるときは空文字だけにする。
-  var separators = ["", " ", "\u3000"];
-  var bases = [], seen = Object.create(null);
-  for (var m = 0; m < (k <= 8 ? Math.pow(separators.length, k) : 1); m++) {
-    var digits = m, s = parts[0];
-    for (var i = 1; i <= k; i++) {
-      s += separators[digits % separators.length] + parts[i];
-      digits = Math.floor(digits / separators.length);
-    }
-    if (s && !seen[s]) {
-      seen[s] = true;
-      bases.push(s);
-    }
-  }
-
-  var shq = function (s) { return "'" + s.replace(/'/g, "'\\''") + "'"; };
-  // パスの先頭をリモートのシェルの語にする。~ は $HOME に、相対パスは今いるディレクトリから
-  var head = function (p) {
-    if (p === "~") return '"$HOME"';
-    if (p.indexOf("~/") === 0) return '"$HOME"' + shq(p.slice(1));
-    if (p.charAt(0) === "/") return shq(p);
-    if (!cwd) return null;
-    return shq(cwd.replace(/\/$/, "") + "/" + p);
-  };
-
-  var exact = bases.map(head);
-  if (exact.indexOf(null) >= 0) {
-    result = "no_cwd\n";
-  } else {
-    result = "remote\n" + bases[0] + "\n" + [
-      "n=0; hit=",
-      "for c in " + exact.join(" ") + "; do",
-      '  [ -f "$c" ] || [ -d "$c" ] || continue; n=$((n+1)); hit=$c; printf \'@@CAND %s\\n\' "$c"',
-      "done"
-    ].join("\n");
-  }
-}
-result;
-JXA
-plan=$(SEL="$selection" SELLEN="$selection_length" SELMAX="$SELECTION_LIMIT" CWD="$cwd" osascript -l JavaScript -e "$plan_js")
-kind=${plan%%$'\n'*}
-body=${plan#*$'\n'}
-if [ "$kind" = remote ]; then
-  # remote の 2 行目は、見つからないときに見せる名前
-  wanted=${body%%$'\n'*}
-  body=${body#*$'\n'}
-fi
-echo "plan: kind=[$kind]"
-
-case "$kind" in
-  url)
-    open "$body" || fail "$(msg down_url_failed "$body")"
-    exit 0
-    ;;
-  remote) ;;
-  too_long) fail "$(msg down_too_long "$body" "$SELECTION_LIMIT")" ;;
-  truncated) selection_limit_dialog "$body" ;;
-  no_cwd) fail "$(msg down_no_cwd)" ;;
-  *) fail "$(msg down_unreadable "$LOG")" ;;
-esac
-
-[ -n "$session_tty" ] || fail "$(msg no_tty)"
-resolve_ssh_context
-[ -n "$cmd" ] || fail "$(msg local_session)"
-[ -n "$SERVER" ] || fail "$(msg no_ssh_dest)"
-
-# 探索を ssh 1 接続で行う。当たりがちょうど 1 つで、確認の要らない大きさのファイルなら、同じ接続で中身も受け取る。
-# リモートの rc が出すゴミと混ざらないよう、結果は @@ で始まる行で、中身は @@BEGIN〜@@END の間に base64 で受け取る
-response=$(mktemp "${TMPDIR:-/tmp}/iterm2-download.XXXXXX")
-trap 'rm -f "$response"' EXIT
-{
-  printf '%s\n' "$body"
-  cat <<REMOTE
-[ "\$n" -eq 1 ] || exit 0
-if [ -d "\$hit" ]; then
-  printf '@@DIR %s %s\n' "\$(du -sk "\$hit" | cut -f1)" "\$(find "\$hit" -type f | wc -l | tr -d ' ')"
-  exit 0
-fi
-bytes=\$(wc -c < "\$hit" | tr -d ' ')
-printf '@@FILE %s\n' "\$bytes"
-[ "\$bytes" -le $CONFIRM_BYTES ] || exit 0
-printf '\n@@BEGIN\n'; base64 < "\$hit"; printf '\n@@END\n'
-REMOTE
-} | ssh -o BatchMode=yes -o ClearAllForwardings=yes -o ConnectTimeout=10 "$SERVER" 'sh -s' >"$response" \
-  || fail "$(msg down_connect_failed "$SERVER" "$LOG")"
-
-hits=$(sed -n 's/^@@CAND //p' "$response")
-count=$(printf '%s' "$hits" | grep -c .)
-echo "hits: count=[$count]"
-echo "$hits"
-case "$count" in
-  0) fail "$(msg down_not_found "$wanted" "$SERVER")" ;;
-  1) ;;
-  *) fail "$(msg down_ambiguous "$wanted" "$count")
-$(printf '%s\n' "$hits" | while IFS= read -r h; do echo "- $(basename "$h")"; done)" ;;
-esac
-
-# ~/Downloads に同じ名前があれば「名前 (1).拡張子」のようにずらす
-name=$(basename "$hits")
-stem=$name ext=""
-case "$name" in ?*.*) stem=${name%.*} ext=".${name##*.}" ;; esac
-dest="$HOME/Downloads/$name"
-i=1
-while [ -e "$dest" ]; do
-  dest="$HOME/Downloads/$stem ($i)$ext"
-  i=$((i + 1))
+# 実在する候補を長さごとに照合し、改行で区切る位置と折り返しを同時に決める。
+transfer_work=$(mktemp -d "${TMPDIR:-/tmp}/iterm2-download.XXXXXX") || fail "$(msg down_unreadable "$LOG")"
+response="$transfer_work/response"
+state="$transfer_work/state.json"
+query="$transfer_work/query.sh"
+saved_paths=()
+trap 'rm -rf "$transfer_work"' EXIT
+plan=$(SEL="$selection" SELLEN="$selection_length" SELMAX="$SELECTION_LIMIT" CWD="$cwd" \
+  osascript -l JavaScript "$SCRIPT_DIR/path-plan.js" init "$state" "$query" "") \
+  || fail "$(msg down_unreadable "$LOG")"
+ssh_ready=0
+while :; do
+  kind=${plan%%$'\n'*}
+  body=${plan#*$'\n'}
+  case "$kind" in
+    url) open "$body" || fail "$(msg down_url_failed "$body")"; exit 0 ;;
+    remote)
+      if [ "$ssh_ready" -eq 0 ]; then
+        [ -n "$session_tty" ] || fail "$(msg no_tty)"
+        resolve_ssh_context
+        [ -n "$cmd" ] || fail "$(msg local_session)"
+        [ -n "$SERVER" ] || fail "$(msg no_ssh_dest)"
+        ssh_ready=1
+      fi
+      ssh -o BatchMode=yes -o ClearAllForwardings=yes -o ConnectTimeout=10 "$SERVER" 'sh -s' <"$query" >"$response" \
+        || fail "$(msg down_connect_failed "$SERVER" "$LOG")"
+      plan=$(CONFIRM_BYTES="$CONFIRM_BYTES" osascript -l JavaScript "$SCRIPT_DIR/path-plan.js" advance "$state" "$query" "$response") \
+        || fail "$(msg down_unreadable "$LOG")"
+      ;;
+    resolved) item_count=$body; break ;;
+    too_long) fail "$(msg down_too_long "$body" "$SELECTION_LIMIT")" ;;
+    truncated) selection_limit_dialog "$body" ;;
+    no_cwd) fail "$(msg down_no_cwd)" ;;
+    not_found) fail "$(msg down_not_found "$selection" "$SERVER")" ;;
+    ambiguous) fail "$(msg down_ambiguous "$body")" ;;
+    too_complex) fail "$(msg down_too_complex)" ;;
+    *) fail "$(msg down_unreadable "$LOG")" ;;
+  esac
 done
+
+# 解釈が確定してから、全件のメタデータと小さいファイルを1接続で受け取る。
+ssh -o BatchMode=yes -o ClearAllForwardings=yes -o ConnectTimeout=10 "$SERVER" 'sh -s' <"$query" >"$response" \
+  || fail "$(msg down_connect_failed "$SERVER" "$LOG")"
+total_bytes=0
+needs_confirm=0
+for ((item=0; item<item_count; item++)); do
+  item_response="$transfer_work/item-$item"
+  awk -v item="$item" '$0 == "@@ITEM " item { inside=1; next } $0 == "@@ITEMEND " item { inside=0; ended=1 } inside { print } END { if (!ended) exit 1 }' \
+    "$response" >"$item_response" || fail "$(msg down_unreadable "$LOG")"
+  hits=$(sed -n 's/^@@CAND //p' "$item_response")
+  [ -n "$hits" ] || fail "$(msg down_unreadable "$LOG")"
+  dir_info=$(sed -n 's/^@@DIR //p' "$item_response")
+  file_bytes=$(sed -n 's/^@@FILE //p' "$item_response")
+  if [ -n "$dir_info" ]; then
+    [[ "$dir_info" =~ ^[0-9]+\ [0-9]+$ ]] || fail "$(msg down_unreadable "$LOG")"
+    total_bytes=$((total_bytes + ${dir_info%% *} * 1024))
+    needs_confirm=1
+  else
+    [[ "$file_bytes" =~ ^[0-9]+$ ]] || fail "$(msg down_unreadable "$LOG")"
+    total_bytes=$((total_bytes + file_bytes))
+    [ "$file_bytes" -le "$CONFIRM_BYTES" ] || needs_confirm=1
+  fi
+done
+# 複数件の確認は、合計の大きさを一度だけ見せる。
+if [ "$item_count" -gt 1 ] && [ "$needs_confirm" -eq 1 ]; then
+  confirm "$(msg down_confirm "$(msg down_items "$item_count")" "$(human_size "$total_bytes")")" \
+    || { echo "cancelled"; exit 0; }
+fi
 
 # 進み具合の窓 (JXA)。受け取り中のファイルの大きさを見て進み具合を出し、中断を押すと窓ごと終わる
 IFS= read -r -d '' progress_js <<'JXA'
@@ -438,43 +364,83 @@ fetch_to() {
     | sed -n '/^@@BEGIN$/,/^@@END$/{/^@@/d;p;}' | base64 -D >"$2"
 }
 
-dir_info=$(sed -n 's/^@@DIR //p' "$response")
-file_bytes=$(sed -n 's/^@@FILE //p' "$response")
-echo "info: dir=[$dir_info] file_bytes=[$file_bytes]"
-remote_path=$(shq "$hits")
+cancelled() {
+  echo "cancelled"
+  if [ "${#saved_paths[@]}" -gt 0 ]; then
+    done_dialog "$(msg down_cancelled)
 
-if [ -n "$dir_info" ]; then
-  # フォルダ: 大きさとファイル数を見せて確認し、tar で固めて受け取って、~/Downloads に置く。
-  # 進み具合を du の大きさと比べられるよう、圧縮はしない
-  dir_kb=${dir_info%% *}
-  dir_files=${dir_info#* }
-  confirm "$(msg down_confirm "$name/" "$(msg size_files "$(human_size $((dir_kb * 1024)))" "$dir_files")")" \
-    || { echo "cancelled"; exit 0; }
-  work=$(mktemp -d "$HOME/Downloads/.download.XXXXXX")
-  receive_with_progress "$work/stream.tar" $((dir_kb * 1024)) "$(msg down_progress "$name/")" fetch_to "p=$remote_path
-cd \"\$(dirname \"\$p\")\" && printf '\\n@@BEGIN\\n' && tar cf - \"./\$(basename \"\$p\")\" | base64 && printf '\\n@@END\\n'" \
-    "$work/stream.tar"
-  status=$?
-  [ "$status" -eq 2 ] && { rm -rf "$work"; echo "cancelled"; exit 0; }
-  [ "$status" -eq 0 ] && tar xf "$work/stream.tar" -C "$work" && rm "$work/stream.tar" \
-    && [ -d "$work/$name" ] && mv "$work/$name" "$dest" && rmdir "$work" \
-    || { rm -rf "$work"; fail "$(msg down_failed "$name/" "$LOG")"; }
-else
-  partial="$dest.part"
-  if [ "$file_bytes" -le "$CONFIRM_BYTES" ]; then
-    sed -n '/^@@BEGIN$/,/^@@END$/{/^@@/d;p;}' "$response" | base64 -D >"$partial"
-  else
-    # 大きいファイル: 大きさを見せて確認してから、進み具合の窓を出しながら改めて受け取る
-    confirm "$(msg down_confirm "$name" "$(human_size "$file_bytes")")" \
-      || { echo "cancelled"; exit 0; }
-    receive_with_progress "$partial" "$file_bytes" "$(msg down_progress "$name")" fetch_to "p=$remote_path
-printf '\\n@@BEGIN\\n'; base64 < \"\$p\"; printf '\\n@@END\\n'" \
-      "$partial"
-    [ $? -eq 2 ] && { rm -f "$partial"; echo "cancelled"; exit 0; }
+$(msg down_saved "${#saved_paths[@]}")" "${saved_paths[@]}"
   fi
-  [ "$(wc -c <"$partial" | tr -d ' ')" = "$file_bytes" ] && mv "$partial" "$dest" \
-    || { rm -f "$partial"; fail "$(msg down_failed "$name" "$LOG")"; }
-fi
+  exit 0
+}
 
-echo "saved: $dest"
-done_dialog "$(msg down_done "$(basename "$dest")")" "$dest"
+# 全件の照合が済んだ後、順に保存する。同名は既存ファイルも選択内のファイルも上書きしない。
+for ((item=0; item<item_count; item++)); do
+  response="$transfer_work/item-$item"
+  hits=$(sed -n 's/^@@CAND //p' "$response")
+  dir_info=$(sed -n 's/^@@DIR //p' "$response")
+  file_bytes=$(sed -n 's/^@@FILE //p' "$response")
+  remote_path=$(shq "$hits")
+  name=$(basename "$hits")
+  stem=$name ext=""
+  case "$name" in ?*.*) stem=${name%.*} ext=".${name##*.}" ;; esac
+  dest="$HOME/Downloads/$name"
+  i=1
+  while [ -e "$dest" ]; do
+    dest="$HOME/Downloads/$stem ($i)$ext"
+    i=$((i + 1))
+  done
+  label=$name
+  [ "$item_count" -eq 1 ] || label="($((item + 1))/$item_count) $name"
+
+  if [ -n "$dir_info" ]; then
+    dir_kb=${dir_info%% *}
+    dir_files=${dir_info#* }
+    if [ "$item_count" -eq 1 ]; then
+      confirm "$(msg down_confirm "$name/" "$(msg size_files "$(human_size $((dir_kb * 1024)))" "$dir_files")")" \
+        || { echo "cancelled"; exit 0; }
+    fi
+    work=$(mktemp -d "$HOME/Downloads/.download.XXXXXX")
+    receive_with_progress "$work/stream.tar" $((dir_kb * 1024)) "$(msg down_progress "$label/")" fetch_to "p=$remote_path
+cd \"\$(dirname \"\$p\")\" && printf '\\n@@BEGIN\\n' && tar cf - \"./\$(basename \"\$p\")\" | base64 && printf '\\n@@END\\n'" \
+      "$work/stream.tar"
+    status=$?
+    if [ "$status" -eq 2 ]; then
+      rm -rf "$work"
+      cancelled
+    fi
+    [ "$status" -eq 0 ] && tar xf "$work/stream.tar" -C "$work" && rm "$work/stream.tar" \
+      && [ -d "$work/$name" ] && mv "$work/$name" "$dest" && rmdir "$work" \
+      || { rm -rf "$work"; fail "$(msg down_failed "$name/" "$LOG")"; }
+  else
+    partial="$transfer_work/file-$item.part"
+    if [ "$file_bytes" -le "$CONFIRM_BYTES" ]; then
+      sed -n '/^@@BEGIN$/,/^@@END$/{/^@@/d;p;}' "$response" | base64 -D >"$partial"
+    else
+      if [ "$item_count" -eq 1 ]; then
+        confirm "$(msg down_confirm "$name" "$(human_size "$file_bytes")")" \
+          || { echo "cancelled"; exit 0; }
+      fi
+      receive_with_progress "$partial" "$file_bytes" "$(msg down_progress "$label")" fetch_to "p=$remote_path
+printf '\\n@@BEGIN\\n'; base64 < \"\$p\"; printf '\\n@@END\\n'" \
+        "$partial"
+      status=$?
+      if [ "$status" -eq 2 ]; then
+        rm -f "$partial"
+        cancelled
+      fi
+      [ "$status" -eq 0 ] || { rm -f "$partial"; fail "$(msg down_failed "$name" "$LOG")"; }
+    fi
+    [ "$(wc -c <"$partial" | tr -d ' ')" = "$file_bytes" ] && mv "$partial" "$dest" \
+      || { rm -f "$partial"; fail "$(msg down_failed "$name" "$LOG")"; }
+  fi
+  saved_paths+=("$dest")
+  echo "saved: $dest"
+done
+
+if [ "$item_count" -eq 1 ]; then
+  message=$(msg down_done "$(basename "${saved_paths[0]}")")
+else
+  message=$(msg down_done "$(msg down_items "$item_count")")
+fi
+done_dialog "$message" "${saved_paths[@]}"
