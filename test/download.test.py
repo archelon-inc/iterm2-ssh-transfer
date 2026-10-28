@@ -4,6 +4,7 @@
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -23,6 +24,8 @@ import sys
 name, args = Path(sys.argv[0]).name, sys.argv[1:]
 if name == "osascript":
     if args[:2] == ["-l", "JavaScript"]:
+        if len(args) > 3 and args[2] == "-e" and "DownloadProgress" in args[3]:
+            raise SystemExit(1)  # 受信は継続し、試験中は進捗窓を開かない。
         os.execv("/usr/bin/osascript", ["/usr/bin/osascript", *args])
     script = sys.stdin.read()
     if "set targetID" in script:
@@ -31,6 +34,11 @@ if name == "osascript":
     else:
         with open(os.environ["TRANSFER_TEST_DIALOGS"], "a") as log:
             log.write(json.dumps(args[1:], ensure_ascii=False) + "\n")
+        if "落としますか" in args[1] and os.environ["TRANSFER_TEST_CANCEL_CONFIRM"] == "1":
+            raise SystemExit(1)
+        if "落としました" in args[1] and os.environ["TRANSFER_TEST_CLOSE_DONE"] == "1":
+            print(args[-2])
+            raise SystemExit(0)
         print(args[-1])
 elif name == "defaults":
     print('(ja)')
@@ -87,12 +95,17 @@ class DownloadTest(unittest.TestCase):
             "TRANSFER_TEST_MICRO": "",
             "TRANSFER_TEST_MICRO_ERROR": "0",
             "TRANSFER_TEST_CLIPBOARD": "",
+            "TRANSFER_TEST_CANCEL_CONFIRM": "0",
+            "TRANSFER_TEST_CLOSE_DONE": "0",
             "TRANSFER_TEST_SSH_COMMAND": "ssh fixture env -u TMUX tmux -CC -S /tmp/fixture.sock attach-session",
         }
 
     def remove_downloads(self):
         for path in DOWNLOADS.glob(self.prefix + "*"):
-            path.unlink()
+            if path.is_dir():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
 
     def file(self, name):
         path = self.remote / (self.prefix + name)
@@ -146,7 +159,7 @@ class DownloadTest(unittest.TestCase):
             self.file("計画全社DR" + separator + "審議.xlsx")
         result = self.download(self.selected("計画全社DR\n  審議.xlsx"))
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("3 個あり", self.dialogs.read_text())
+        self.assertIn("決められません", self.dialogs.read_text())
         self.assertEqual(list(DOWNLOADS.glob(self.prefix + "*")), [])
 
     def test_missing_candidates_are_not_downloaded(self):
@@ -154,6 +167,141 @@ class DownloadTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("ありません", self.dialogs.read_text())
         self.assertEqual(list(DOWNLOADS.glob(self.prefix + "*")), [])
+
+    def assert_batch_downloaded(self, sources, selection):
+        result = self.download(selection)
+        self.assertEqual(result.returncode, 0, self.dialogs.read_text() if self.dialogs.exists() else result.stderr)
+        for source in sources:
+            self.assertEqual((DOWNLOADS / source.name).read_bytes(), source.read_bytes())
+        dialogs = [json.loads(line) for line in self.dialogs.read_text().splitlines()]
+        self.assertIn(str(len(sources)) + " 件", dialogs[-1][0])
+
+    def test_three_absolute_paths(self):
+        sources = [self.file(name) for name in ["排水.pdf", "クレーン GDI.pdf", "煙突（承認済）.pdf"]]
+        self.assert_batch_downloaded(sources, "\r\n".join(map(str, sources)))
+
+    def test_paths_and_wraps_with_different_spaces(self):
+        sources = [self.file(name) for name in ["排水\u3000処理設備.pdf", "ごみクレーン GDI.pdf", "煙突GDI.pdf"]]
+        selected = [self.selected(name) for name in ["排水\n  処理設備.pdf", "ごみクレーン\n GDI.pdf", "煙突\nGDI.pdf"]]
+        self.assert_batch_downloaded(sources, "\n".join(selected))
+
+    def test_absolute_wrapped_paths_without_cwd(self):
+        sources = [self.file("排水\u3000処理設備.pdf"), self.file("煙突.pdf")]
+        self.environment["TRANSFER_TEST_REMOTE"] = ""
+        self.assert_batch_downloaded(sources, self.selected("排水\n処理設備.pdf") + "\n" + str(sources[1]))
+
+    def test_many_directory_wraps(self):
+        parent = self.remote.joinpath(*(["directory"] * 9))
+        parent.mkdir(parents=True)
+        source = parent / (self.prefix + "排水.pdf")
+        source.write_bytes(b"deep path")
+        self.assert_downloaded(source, str(source).replace("/directory", "/direc\ntory"))
+
+    def test_relative_paths(self):
+        sources = [self.file("排水.pdf"), self.file("クレーン.pdf")]
+        self.assert_batch_downloaded(sources, "\n".join(source.name for source in sources))
+
+    def test_quoted_paths_and_blank_lines(self):
+        sources = [self.file("排水（承認済）.pdf"), self.file("クレーン.pdf")]
+        self.assert_batch_downloaded(sources, "\n\n".join('"' + str(source) + '"' for source in sources) + "\n")
+
+    def test_multiple_interpretations_of_boundaries_are_not_downloaded(self):
+        sources = [self.file("排水.pdf"), self.file("煙突.pdf")]
+        joined = self.remote / "".join(source.name for source in sources)
+        joined.write_bytes(b"one combined path")
+        result = self.download("\n".join(source.name for source in sources))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("決められません", self.dialogs.read_text())
+        self.assertEqual(list(DOWNLOADS.glob(self.prefix + "*")), [])
+
+    def test_missing_path_stops_entire_batch(self):
+        source = self.file("排水.pdf")
+        result = self.download(str(source) + "\n" + self.selected("存在しない.pdf"))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("ありません", self.dialogs.read_text())
+        self.assertEqual(list(DOWNLOADS.glob(self.prefix + "*")), [])
+
+    def test_only_complete_interpretation_is_used(self):
+        unused = self.file("排水")
+        sources = [self.file("排水処理設備.pdf"), self.file("煙突.pdf")]
+        self.assert_batch_downloaded(sources, str(unused) + "\n処理設備.pdf\n" + str(sources[1]))
+        self.assertFalse((DOWNLOADS / unused.name).exists())
+
+    def test_same_basename_preserves_existing_file(self):
+        sources = []
+        for directory in ["first", "second"]:
+            parent = self.remote / directory
+            parent.mkdir()
+            source = parent / (self.prefix + "同名.pdf")
+            source.write_text(directory)
+            sources.append(source)
+        target = DOWNLOADS / sources[0].name
+        target.write_bytes(b"existing")
+        result = self.download("\n".join(map(str, sources)))
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(target.read_bytes(), b"existing")
+        for i, source in enumerate(sources, 1):
+            self.assertEqual(target.with_stem(target.stem + " (" + str(i) + ")").read_bytes(), source.read_bytes())
+
+    def test_clipboard_batch(self):
+        sources = [self.file("排水.pdf"), self.file("煙突.pdf")]
+        self.environment["TRANSFER_TEST_CLIPBOARD"] = "\n".join(map(str, sources))
+        self.assert_batch_downloaded(sources, "")
+
+    def test_many_paths(self):
+        sources = [self.file(str(i) + ".pdf") for i in range(20)]
+        self.assert_batch_downloaded(sources, "\n".join(map(str, sources)))
+
+    def test_shell_characters_are_literal(self):
+        sources = [self.file("資料`x`'name$(false); &.pdf"), self.file("煙突.pdf")]
+        self.assert_batch_downloaded(sources, "\n".join(map(str, sources)))
+
+    def test_repeated_path_is_saved_once(self):
+        source = self.file("排水.pdf")
+        self.assert_downloaded(source, str(source) + "\n" + str(source))
+        self.assertEqual(len(list(DOWNLOADS.glob(self.prefix + "*"))), 1)
+
+    def test_file_and_directory(self):
+        source = self.file("排水.pdf")
+        folder = self.remote / (self.prefix + "図面")
+        folder.mkdir()
+        (folder / "図面.txt").write_text("図面の内容")
+        result = self.download(str(source) + "\n" + str(folder))
+        self.assertEqual(result.returncode, 0, self.dialogs.read_text())
+        self.assertEqual((DOWNLOADS / source.name).read_bytes(), source.read_bytes())
+        self.assertEqual((DOWNLOADS / folder.name / "図面.txt").read_text(), "図面の内容")
+
+    def test_large_files_are_confirmed_as_a_batch(self):
+        sources = [self.file("排水.pdf"), self.file("煙突.pdf")]
+        for source in sources:
+            source.write_bytes(b"x" * (11 * 1024 * 1024))
+        self.assert_batch_downloaded(sources, "\n".join(map(str, sources)))
+        dialogs = [json.loads(line) for line in self.dialogs.read_text().splitlines()]
+        confirms = [dialog[0] for dialog in dialogs if "落としますか" in dialog[0]]
+        self.assertEqual(len(confirms), 1)
+        self.assertIn("2 件", confirms[0])
+
+    def test_cancelled_batch_saves_nothing(self):
+        source = self.file("排水.pdf")
+        folder = self.remote / (self.prefix + "図面")
+        folder.mkdir()
+        self.environment["TRANSFER_TEST_CANCEL_CONFIRM"] = "1"
+        result = self.download(str(source) + "\n" + str(folder))
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(list(DOWNLOADS.glob(self.prefix + "*")), [])
+
+    def test_closing_completion_dialog_is_success(self):
+        sources = [self.file("排水.pdf"), self.file("煙突.pdf")]
+        self.environment["TRANSFER_TEST_CLOSE_DONE"] = "1"
+        self.assert_batch_downloaded(sources, "\n".join(map(str, sources)))
+        self.assertFalse(self.opened.exists())
+
+    def test_excessive_wraps_do_not_guess_a_path(self):
+        source = self.file("\u3000".join(["資料"] * 10) + ".pdf")
+        result = self.download(self.selected("\n".join(["資料"] * 10) + ".pdf"))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("候補が多すぎます", self.dialogs.read_text())
+        self.assertFalse((DOWNLOADS / source.name).exists())
 
     def test_iterm_selection_precedes_micro_and_clipboard(self):
         source = self.file("iTerm2.xlsx")
