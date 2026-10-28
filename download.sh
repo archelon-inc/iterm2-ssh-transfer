@@ -434,7 +434,7 @@ receive_with_progress() {
 
 # リモートで sh スクリプト ($1) を実行し、@@BEGIN〜@@END の base64 を戻してファイル ($2) に書く
 fetch_to() {
-  printf '%s\n' "$1" | ssh -o BatchMode=yes -o ConnectTimeout=10 "$SERVER" 'sh -s' \
+  printf '%s\n' "$1" | ssh -o BatchMode=yes -o ClearAllForwardings=yes -o ConnectTimeout=10 "$SERVER" 'sh -s' \
     | sed -n '/^@@BEGIN$/,/^@@END$/{/^@@/d;p;}' | base64 -D >"$2"
 }
 
