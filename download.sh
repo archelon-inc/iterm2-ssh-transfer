@@ -3,7 +3,7 @@
 #   - URL なら Mac のブラウザで開く
 #   - ファイルやフォルダのパスなら「今そのタブで SSH 接続中のホスト」から ~/Downloads に落とす
 #     (フォルダと大きいファイルは、大きさを見せて確認してから、進み具合の窓を出しながら落とす)
-# 画面の折り返しで改行や字下げが混ざっていても、つなぎ目だけを「何も無い / スペース1つ」とみなして
+# 画面の折り返しで改行や字下げが混ざっていても、つなぎ目だけを「何も無い / 半角・全角スペース1つ」とみなして
 # 候補を作り、リモートに実在するファイルやフォルダがちょうど1つに決まったときだけ落とす。
 # 相対パスは、iTerm2 が覚えているそのセッションの今いるディレクトリ (path 変数) から解決する。
 #
@@ -184,7 +184,7 @@ function env(k) {
 var sel = env("SEL"), cwd = env("CWD"), selLen = Number(env("SELLEN")), selMax = Number(env("SELMAX"));
 
 // 折り返しのつなぎ目: 改行と、その前後の空白・枠線の文字
-var edge = "[ \\t\\u2502\\u2503\\u2551]*";
+var edge = "[ \\t\\u3000\\u2502\\u2503\\u2551]*";
 var junction = new RegExp(edge + "\\r?\\n" + edge, "g");
 
 // 前後の空白・枠線・引用符・括弧と、文末の句読点を外す
@@ -213,17 +213,20 @@ if (selLen > selMax) {
   var parts = text.split(junction);
   var k = parts.length - 1;
 
-  // 各つなぎ目を「何も無い」か「スペース1つ」にした組み合わせ。つなぎ目が多すぎるときは「何も無い」だけ
-  var masks = [];
-  for (var m = 0; m < (k <= 8 ? 1 << k : 1); m++) masks.push(m);
-  var bits = function (m) { var c = 0; for (; m; m >>= 1) c += m & 1; return c; };
-  masks.sort(function (a, b) { return bits(a) - bits(b); });
-  var bases = masks.map(function (m) {
-    var s = parts[0];
-    for (var i = 1; i <= k; i++) s += ((m >> (i - 1)) & 1 ? " " : "") + parts[i];
-    return s;
-  });
-  bases = bases.filter(function (b, i) { return b && bases.indexOf(b) === i; });
+  // 折り返しで消えた文字は、実在するパスとの照合で決める。8か所を超えるときは空文字だけにする。
+  var separators = ["", " ", "\u3000"];
+  var bases = [], seen = Object.create(null);
+  for (var m = 0; m < (k <= 8 ? Math.pow(separators.length, k) : 1); m++) {
+    var digits = m, s = parts[0];
+    for (var i = 1; i <= k; i++) {
+      s += separators[digits % separators.length] + parts[i];
+      digits = Math.floor(digits / separators.length);
+    }
+    if (s && !seen[s]) {
+      seen[s] = true;
+      bases.push(s);
+    }
+  }
 
   var shq = function (s) { return "'" + s.replace(/'/g, "'\\''") + "'"; };
   // パスの先頭をリモートのシェルの語にする。~ は $HOME に、相対パスは今いるディレクトリから
