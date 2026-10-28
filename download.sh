@@ -1,5 +1,5 @@
 #!/bin/bash
-# iTerm2 で選んでいる文字を見て、
+# iTerm2 の選択 → micro の選択 → クリップボードの順で文字を取得し、
 #   - URL なら Mac のブラウザで開く
 #   - ファイルやフォルダのパスなら「今そのタブで SSH 接続中のホスト」から ~/Downloads に落とす
 #     (フォルダと大きいファイルは、大きさを見せて確認してから、進み具合の窓を出しながら落とす)
@@ -21,7 +21,9 @@ SELECTION_LIMIT=4096
 exec 3>&1 >>"$LOG" 2>&1
 echo "=== $(date '+%F %T') pid=$$ ==="
 # 画面に出す文 (日本語と英語)。リンクから呼ばれても見つかるよう、実体の場所から読む
-. "$(dirname "$(perl -MCwd=abs_path -e 'print abs_path(shift)' "$0")")/messages.sh"
+SCRIPT_DIR=$(dirname "$(perl -MCwd=abs_path -e 'print abs_path(shift)' "$0")")
+. "$SCRIPT_DIR/messages.sh"
+. "$SCRIPT_DIR/selection.sh"
 msg_init "$(defaults read -g AppleLanguages 2>/dev/null)"
 
 # 失敗を知らせるダイアログ
@@ -137,11 +139,13 @@ on run argv
               set selLen to variable named "selectionLength"
               set cwd to variable named "path"
               set jobPID to variable named "jobPid"
+              set tmuxPane to variable named "tmuxWindowPane"
             end tell
             set sessionTTY to tty of s
             if sel is missing value then set sel to ""
             if selLen is missing value then set selLen to 0
             if cwd is missing value then set cwd to ""
+            if tmuxPane is missing value then set tmuxPane to ""
             if sessionTTY is missing value then
               if jobPID is missing value then
                 set sessionTTY to ""
@@ -149,7 +153,7 @@ on run argv
                 set sessionTTY to "pid:" & (jobPID as text)
               end if
             end if
-            return (sessionTTY as text) & US & (cwd as text) & US & (selLen as text) & US & (sel as text) & US
+            return (sessionTTY as text) & US & (cwd as text) & US & (selLen as text) & US & (tmuxPane as text) & US & (sel as text) & US
           end if
         end repeat
       end repeat
@@ -164,13 +168,20 @@ rest=${session#*"$US"}
 cwd=${rest%%"$US"*}
 rest=${rest#*"$US"}
 selection_length=${rest%%"$US"*}
+rest=${rest#*"$US"}
+tmux_pane=${rest%%"$US"*}
 # 末尾の US は、選んだ文字の最後の改行が $( ) で消されないための止め
 selection=${rest#*"$US"}
 selection=${selection%"$US"}
-echo "session: tty=[$session_tty] cwd=[$cwd] selectionLength=[$selection_length] selection=[$selection]"
+selection_source=iterm2
 
 [ -n "$session" ] || fail "$(msg no_session)"
+if [ -z "$selection" ]; then
+  [ "${selection_length:-0}" -eq 0 ] || fail "$(msg down_unreadable "$LOG")"
+  read_fallback_selection
+fi
 [ -n "$selection" ] || fail "$(msg down_no_selection)"
+echo "session: tty=[$session_tty] selection_source=[$selection_source] selectionLength=[$selection_length]"
 
 # 選んだ文字から、URL か、リモートで実行する探索スクリプトを作る (1 行目が種類)
 # macOS の /bin/bash (3.2) は $( ) の中のヒアドキュメントにある引用符を読み違えるので、
@@ -181,7 +192,8 @@ function env(k) {
   var v = $.NSProcessInfo.processInfo.environment.objectForKey(k);
   return v.isNil() ? "" : v.js;
 }
-var sel = env("SEL"), cwd = env("CWD"), selLen = Number(env("SELLEN")), selMax = Number(env("SELMAX"));
+var sel = env("SEL"), cwd = env("CWD"), selMax = Number(env("SELMAX"));
+var selLen = env("SELLEN") === "" ? sel.length : Number(env("SELLEN"));
 
 // 折り返しのつなぎ目: 改行と、その前後の空白・枠線の文字
 var edge = "[ \\t\\u3000\\u2502\\u2503\\u2551]*";
@@ -261,7 +273,6 @@ if [ "$kind" = remote ]; then
   body=${body#*$'\n'}
 fi
 echo "plan: kind=[$kind]"
-echo "$body"
 
 case "$kind" in
   url)
@@ -275,32 +286,9 @@ case "$kind" in
   *) fail "$(msg down_unreadable "$LOG")" ;;
 esac
 
-# ps の ssh コマンド行から接続先 (エイリアス or user@host) を取り出す
-parse_ssh_dest() {
-  set -- $1
-  shift  # "ssh" を捨てる
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      -o|-p|-i|-l|-L|-R|-D|-J|-F|-c|-m|-e|-b|-E|-S|-W|-w|-B|-I|-P) shift 2 ;;
-      -*) shift ;;
-      *) echo "$1"; return 0 ;;
-    esac
-  done
-  return 1
-}
-
-case "$session_tty" in
-  pid:*)
-    session_tty=$(ps -p "${session_tty#pid:}" -o tty= | xargs)
-    case "$session_tty" in tty*) session_tty="/dev/$session_tty" ;; *) session_tty="" ;; esac
-    ;;
-esac
 [ -n "$session_tty" ] || fail "$(msg no_tty)"
-
-cmd=$(ps -t "${session_tty#/dev/}" -o command= | grep -E '^([^ ]*/)?ssh( |$)' | grep -v -- ' -W ' | head -1)
-echo "tty lookup: tty=[$session_tty] ssh=[$cmd]"
+resolve_ssh_context
 [ -n "$cmd" ] || fail "$(msg local_session)"
-SERVER=$(parse_ssh_dest "$cmd")
 [ -n "$SERVER" ] || fail "$(msg no_ssh_dest)"
 
 # 探索を ssh 1 接続で行う。当たりがちょうど 1 つで、確認の要らない大きさのファイルなら、同じ接続で中身も受け取る。
@@ -320,7 +308,7 @@ printf '@@FILE %s\n' "\$bytes"
 [ "\$bytes" -le $CONFIRM_BYTES ] || exit 0
 printf '\n@@BEGIN\n'; base64 < "\$hit"; printf '\n@@END\n'
 REMOTE
-} | ssh -o BatchMode=yes -o ConnectTimeout=10 "$SERVER" 'sh -s' >"$response" \
+} | ssh -o BatchMode=yes -o ClearAllForwardings=yes -o ConnectTimeout=10 "$SERVER" 'sh -s' >"$response" \
   || fail "$(msg down_connect_failed "$SERVER" "$LOG")"
 
 hits=$(sed -n 's/^@@CAND //p' "$response")
