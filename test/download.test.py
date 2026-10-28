@@ -229,6 +229,17 @@ class DownloadTest(unittest.TestCase):
         self.assertIn("4097", self.dialogs.read_text())
         self.assertEqual(list(DOWNLOADS.glob(self.prefix + "*")), [])
 
+    def test_missing_clipboard_text_is_not_written_to_debug_log(self):
+        text = self.prefix + "clipboard-text"
+        self.environment["TRANSFER_TEST_CLIPBOARD"] = text
+        log = Path("/tmp/iterm2-download.log")
+        offset = log.stat().st_size if log.exists() else 0
+        result = self.download("")
+        self.assertNotEqual(result.returncode, 0)
+        with log.open("rb") as handle:
+            handle.seek(offset)
+            self.assertNotIn(text.encode(), handle.read())
+
 
 if __name__ == "__main__":
     unittest.main()

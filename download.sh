@@ -90,7 +90,7 @@ APPLESCRIPT
 }
 
 fail() {
-  echo "fail: $1"
+  echo "fail: ダウンロードを停止（理由はダイアログに表示）"
   alert "$1"
   exit 1
 }
