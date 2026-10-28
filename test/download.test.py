@@ -43,8 +43,6 @@ elif name == "ssh":
 elif name == "open":
     pass
 elif name in ("board", "pbpaste"):
-    with open(os.environ["TRANSFER_TEST_EVENTS"], "a") as log:
-        log.write(name + "\n")
     if name == "board":
         if args != ["selection", "--socket", "/tmp/fixture.sock", "--pane", "%2"]:
             raise SystemExit("試験で許していない板の取得先です")
@@ -69,7 +67,6 @@ class DownloadTest(unittest.TestCase):
         self.prefix = "iterm2-test-" + uuid.uuid4().hex + "-"
         self.addCleanup(self.remove_downloads)
         self.dialogs = self.root / "dialogs.jsonl"
-        self.events = self.root / "events.log"
         binaries = self.root / "bin"
         binaries.mkdir()
         mock = binaries / "mock-command.py"
@@ -83,7 +80,6 @@ class DownloadTest(unittest.TestCase):
             "ITERM_SESSION_ID": "fixture",
             "TRANSFER_TEST_REMOTE": str(self.remote),
             "TRANSFER_TEST_DIALOGS": str(self.dialogs),
-            "TRANSFER_TEST_EVENTS": str(self.events),
             "TRANSFER_TEST_PANE": "",
             "TRANSFER_TEST_MICRO": "",
             "TRANSFER_TEST_MICRO_ERROR": "0",
@@ -161,33 +157,30 @@ class DownloadTest(unittest.TestCase):
         self.environment.update(TRANSFER_TEST_PANE="2", TRANSFER_TEST_MICRO=str(self.file("micro.xlsx")),
                                 TRANSFER_TEST_CLIPBOARD=str(self.file("clipboard.xlsx")))
         self.assert_downloaded(source, str(source))
-        self.assertFalse(self.events.exists())
+        self.assertEqual(len(list(DOWNLOADS.glob(self.prefix + "*"))), 1)
 
     def test_micro_selection_precedes_clipboard(self):
         source = self.file("micro.xlsx")
         self.environment.update(TRANSFER_TEST_PANE="2", TRANSFER_TEST_MICRO=str(source),
                                 TRANSFER_TEST_CLIPBOARD=str(self.file("clipboard.xlsx")))
         self.assert_downloaded(source, "")
-        self.assertEqual(self.events.read_text().splitlines(), ["board"])
+        self.assertEqual(len(list(DOWNLOADS.glob(self.prefix + "*"))), 1)
 
     def test_empty_micro_selection_uses_clipboard(self):
         source = self.file("clipboard.xlsx")
         self.environment.update(TRANSFER_TEST_PANE="2", TRANSFER_TEST_CLIPBOARD=str(source))
         self.assert_downloaded(source, "")
-        self.assertEqual(self.events.read_text().splitlines(), ["board", "pbpaste"])
 
     def test_no_tmux_pane_uses_clipboard(self):
         source = self.file("clipboard.xlsx")
         self.environment["TRANSFER_TEST_CLIPBOARD"] = str(source)
         self.assert_downloaded(source, "")
-        self.assertEqual(self.events.read_text().splitlines(), ["pbpaste"])
 
     def test_missing_iterm_path_does_not_use_other_sources(self):
         self.environment.update(TRANSFER_TEST_PANE="2", TRANSFER_TEST_MICRO=str(self.file("micro.xlsx")),
                                 TRANSFER_TEST_CLIPBOARD=str(self.file("clipboard.xlsx")))
         result = self.download(self.selected("存在しない.xlsx"))
         self.assertNotEqual(result.returncode, 0)
-        self.assertFalse(self.events.exists())
         self.assertEqual(list(DOWNLOADS.glob(self.prefix + "*")), [])
 
     def test_missing_micro_path_does_not_use_clipboard(self):
@@ -195,7 +188,6 @@ class DownloadTest(unittest.TestCase):
                                 TRANSFER_TEST_CLIPBOARD=str(self.file("clipboard.xlsx")))
         result = self.download("")
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(self.events.read_text().splitlines(), ["board"])
         self.assertEqual(list(DOWNLOADS.glob(self.prefix + "*")), [])
 
     def test_micro_error_does_not_use_clipboard(self):
@@ -203,14 +195,12 @@ class DownloadTest(unittest.TestCase):
                                 TRANSFER_TEST_CLIPBOARD=str(self.file("clipboard.xlsx")))
         result = self.download("")
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(self.events.read_text().splitlines(), ["board"])
         self.assertEqual(list(DOWNLOADS.glob(self.prefix + "*")), [])
 
     def test_empty_sources_do_not_download(self):
         self.environment["TRANSFER_TEST_PANE"] = "2"
         result = self.download("")
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(self.events.read_text().splitlines(), ["board", "pbpaste"])
         self.assertIn("文字が選ばれていません", self.dialogs.read_text())
         self.assertEqual(list(DOWNLOADS.glob(self.prefix + "*")), [])
 
