@@ -76,7 +76,12 @@ parse_ssh_dest() {
 # 接続先を決められなければ、誤送信を避けるため送らない
 cmd=$(ps -t "${session_tty#/dev/}" -o command= | grep -E '^([^ ]*/)?ssh( |$)' | grep -v -- ' -W ' | head -1)
 log "tty lookup: tty=[$session_tty] ssh=[$cmd]"
-[ -n "$cmd" ] || fail "$(msg local_session)"
+# SSH でないタブでは送らず、いつもの貼り付けの Ctrl+V をそのタブへ打つ
+if [ -z "$cmd" ]; then
+  log "local session: send Ctrl+V"
+  printf '\026'
+  exit 0
+fi
 SERVER=$(parse_ssh_dest "$cmd")
 [ -n "$SERVER" ] || fail "$(msg no_ssh_dest)"
 
