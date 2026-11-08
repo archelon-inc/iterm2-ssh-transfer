@@ -76,7 +76,13 @@ parse_ssh_dest() {
 # 接続先を決められなければ、誤送信を避けるため送らない
 cmd=$(ps -t "${session_tty#/dev/}" -o command= | grep -E '^([^ ]*/)?ssh( |$)' | grep -v -- ' -W ' | head -1)
 log "tty lookup: tty=[$session_tty] ssh=[$cmd]"
-[ -n "$cmd" ] || fail "$(msg local_session)"
+# arcom の SSH は会話の表示にも使う。実行先が Mac なら通常の Mac タブと同じ貼り付けにする。
+mac_observe='[[:space:]]--client=[0-9]+[[:space:]]+observe[[:space:]]+mac:[a-zA-Z0-9_.-]+[[:space:]]*$'
+if [ -z "$cmd" ] || [[ "$cmd" =~ $mac_observe ]]; then
+  log "local session: send Ctrl+V"
+  printf '\026'
+  exit 0
+fi
 SERVER=$(parse_ssh_dest "$cmd")
 [ -n "$SERVER" ] || fail "$(msg no_ssh_dest)"
 
