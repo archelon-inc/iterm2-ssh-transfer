@@ -74,11 +74,13 @@ parse_ssh_dest() {
 }
 
 # 接続先を決められなければ、誤送信を避けるため送らない
-cmd=$(ps -t "${session_tty#/dev/}" -o command= | grep -E '^([^ ]*/)?ssh( |$)' | grep -v -- ' -W ' | head -1)
+# 同じttyの通知監視SSHなどを除き、操作対象の前景プロセス（statの+）だけを見る。
+cmd=$(ps -t "${session_tty#/dev/}" -o stat= -o command= \
+  | awk '$1 ~ /\+/ { sub(/^[[:space:]]*[^[:space:]]+[[:space:]]+/, ""); print }' \
+  | grep -E '^([^ ]*/)?ssh( |$)' | grep -v -- ' -W ' | head -1)
 log "tty lookup: tty=[$session_tty] ssh=[$cmd]"
-# arcom の SSH は会話の表示にも使う。実行先が Mac なら通常の Mac タブと同じ貼り付けにする。
-mac_observe='[[:space:]]--client=[0-9]+[[:space:]]+observe[[:space:]]+mac:[a-zA-Z0-9_.-]+[[:space:]]*$'
-if [ -z "$cmd" ] || [[ "$cmd" =~ $mac_observe ]]; then
+# SSHで操作中でなければ、Macの通常の貼り付けにする。
+if [ -z "$cmd" ]; then
   log "local session: send Ctrl+V"
   printf '\026'
   exit 0

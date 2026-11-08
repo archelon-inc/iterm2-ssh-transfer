@@ -43,7 +43,12 @@ if name == "osascript":
 elif name == "defaults":
     print('(ja)')
 elif name == "ps":
-    print(os.environ["TRANSFER_TEST_SSH_COMMAND"])
+    if "stat=" in args:
+        if os.environ["TRANSFER_TEST_BACKGROUND_SSH"]:
+            print("S " + os.environ["TRANSFER_TEST_BACKGROUND_SSH"])
+        print("S+ " + os.environ["TRANSFER_TEST_SSH_COMMAND"])
+    else:
+        print(os.environ["TRANSFER_TEST_SSH_COMMAND"])
 elif name == "ssh":
     if args[-2:] != ["fixture", "sh -s"]:
         raise SystemExit("試験で許していない接続先です")
@@ -97,6 +102,7 @@ class DownloadTest(unittest.TestCase):
             "TRANSFER_TEST_CLIPBOARD": "",
             "TRANSFER_TEST_CANCEL_CONFIRM": "0",
             "TRANSFER_TEST_CLOSE_DONE": "0",
+            "TRANSFER_TEST_BACKGROUND_SSH": "",
             "TRANSFER_TEST_SSH_COMMAND": "ssh fixture env -u TMUX tmux -CC -S /tmp/fixture.sock attach-session",
         }
 
@@ -391,6 +397,12 @@ class DownloadTest(unittest.TestCase):
         result = self.download("")
         self.assertEqual(result.returncode, 0)
         self.assertEqual([json.loads(line) for line in self.opened.read_text().splitlines()], [[url]])
+
+
+    def test_background_mailbox_ssh_is_not_the_download_source(self):
+        self.environment["TRANSFER_TEST_BACKGROUND_SSH"] = "ssh arcom-seat-office-work -- --client=10 observe mac:office-work"
+        source = self.file("mailbox-background.txt")
+        self.assert_downloaded(source, str(source))
 
 
 if __name__ == "__main__":

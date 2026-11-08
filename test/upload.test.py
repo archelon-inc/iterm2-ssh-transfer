@@ -55,8 +55,8 @@ class UploadTest(unittest.TestCase):
     def test_mac_tabs_emit_ctrl_v_without_reading_or_sending_clipboard(self):
         for command in [
             '',
-            'ssh -o BatchMode=yes arcom-seat-office-work -- --client=10 observe mac:office-work',
-            '/usr/bin/ssh -o ControlMaster=no arcom-seat-arcom -- --client=999 observe mac:arcom',
+            'S ssh -o BatchMode=yes arcom-seat-office-work -- --client=10 observe mac:office-work',
+            'S+ codex --remote unix:///tmp/test.sock\nS /usr/bin/ssh -o ControlMaster=no arcom-seat-arcom -- --client=999 observe mac:arcom',
         ]:
             with self.subTest(command=command):
                 result, clipboard_read, transferred = self.upload(command)
@@ -67,10 +67,10 @@ class UploadTest(unittest.TestCase):
 
     def test_remote_tabs_keep_the_upload_path(self):
         for command in [
-            'ssh -tt rocket env -u TMUX tmux -CC attach-session',
-            'ssh arcom-seat-office-work -- --client=10 observe rocket:secretary',
-            'ssh mac:ordinary-host',
-            'ssh example echo observe mac:office-work',
+            'S+ ssh -tt rocket env -u TMUX tmux -CC attach-session',
+            'S ssh arcom-seat-office-work -- --client=10 observe mac:office-work\nS+ ssh rocket',
+            'S+ ssh mac:ordinary-host',
+            'S+ ssh example echo observe mac:office-work',
         ]:
             with self.subTest(command=command):
                 result, clipboard_read, transferred = self.upload(command)

@@ -28,7 +28,10 @@ resolve_ssh_context() {
       ;;
   esac
   [ -n "$session_tty" ] || return 1
-  cmd=$(ps -t "${session_tty#/dev/}" -o command= | grep -E '^([^ ]*/)?ssh( |$)' | grep -v -- ' -W ' | head -1)
+  # 同じttyの通知監視SSHなどを除き、操作対象の前景プロセス（statの+）だけを見る。
+cmd=$(ps -t "${session_tty#/dev/}" -o stat= -o command= \
+  | awk '$1 ~ /\+/ { sub(/^[[:space:]]*[^[:space:]]+[[:space:]]+/, ""); print }' \
+  | grep -E '^([^ ]*/)?ssh( |$)' | grep -v -- ' -W ' | head -1)
   [ -n "$cmd" ] || return 1
   SERVER=$(parse_ssh_dest "$cmd")
   echo "ssh context: tty=[$session_tty] host=[$SERVER]"
